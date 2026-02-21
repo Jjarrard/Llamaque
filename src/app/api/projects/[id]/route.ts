@@ -2,6 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
 import { projects, tasks, logs, references } from "@/db/schema";
 import { eq, and, asc } from "drizzle-orm";
+import fs from "fs";
+import path from "path";
 
 /**
  * GET /api/projects/[id] — Get project details with task tree
@@ -30,8 +32,9 @@ export async function GET(
 }
 
 /**
- * PATCH /api/projects/[id] — Bulk actions: approve all awaiting tasks
+ * PATCH /api/projects/[id] — Bulk actions: approve all awaiting tasks, or reset a stage
  * Body: { action: "approve_all" }
+ *   or  { action: "reset_stage", stage: "decompose" | "breakdown" | "execute" }
  */
 export async function PATCH(
   request: NextRequest,
@@ -54,6 +57,94 @@ export async function PATCH(
     return NextResponse.json({ ok: true });
   }
 
+  if (body.action === "reset_stage") {
+    const stage = body.stage as string;
+
+    if (stage === "decompose") {
+      // Delete everything and start fresh
+      await db.delete(logs).where(eq(logs.projectId, projectId));
+      await db.delete(references).where(eq(references.projectId, projectId));
+      await db.delete(tasks).where(eq(tasks.projectId, projectId));
+      // Remove output files
+      const outputDir = path.join(process.cwd(), "output", id);
+      if (fs.existsSync(outputDir)) {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+      await db
+        .update(projects)
+        .set({ status: "pending" })
+        .where(eq(projects.id, projectId));
+    } else if (stage === "breakdown") {
+      // Delete depth >= 2 tasks (features, work items) and reset depth 1 tasks to pending
+      const allTasks = await db.query.tasks.findMany({
+        where: eq(tasks.projectId, projectId),
+      });
+      const toDelete = allTasks.filter((t) => t.depth >= 2).map((t) => t.id);
+      for (const tid of toDelete) {
+        await db.delete(logs).where(eq(logs.taskId, tid));
+        await db.delete(tasks).where(eq(tasks.id, tid));
+      }
+      // Reset depth 1 tasks back to pending
+      for (const t of allTasks.filter((t) => t.depth === 1)) {
+        await db
+          .update(tasks)
+          .set({
+            status: "pending",
+            output: null,
+            qAReason: null,
+            stuckReason: null,
+            retryCount: 0,
+            editRetryCount: 0,
+            parseRetryCount: 0,
+          })
+          .where(eq(tasks.id, t.id));
+      }
+      await db.delete(references).where(eq(references.projectId, projectId));
+      // Remove output files
+      const outputDir = path.join(process.cwd(), "output", id);
+      if (fs.existsSync(outputDir)) {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+      await db
+        .update(projects)
+        .set({ status: "paused" })
+        .where(eq(projects.id, projectId));
+    } else if (stage === "execute") {
+      // Reset all depth >= 3 tasks (work items) back to ready, clear output
+      const allTasks = await db.query.tasks.findMany({
+        where: eq(tasks.projectId, projectId),
+      });
+      for (const t of allTasks.filter((t) => t.depth >= 3)) {
+        await db
+          .update(tasks)
+          .set({
+            status: "ready",
+            output: null,
+            qAReason: null,
+            stuckReason: null,
+            retryCount: 0,
+            editRetryCount: 0,
+            parseRetryCount: 0,
+          })
+          .where(eq(tasks.id, t.id));
+      }
+      await db.delete(references).where(eq(references.projectId, projectId));
+      // Remove output files
+      const outputDir = path.join(process.cwd(), "output", id);
+      if (fs.existsSync(outputDir)) {
+        fs.rmSync(outputDir, { recursive: true, force: true });
+      }
+      await db
+        .update(projects)
+        .set({ status: "paused" })
+        .where(eq(projects.id, projectId));
+    } else {
+      return NextResponse.json({ error: "Unknown stage" }, { status: 400 });
+    }
+
+    return NextResponse.json({ ok: true });
+  }
+
   return NextResponse.json({ error: "Unknown action" }, { status: 400 });
 }
 
@@ -66,6 +157,12 @@ export async function DELETE(
 ) {
   const { id } = await params;
   const projectId = parseInt(id, 10);
+
+  // Delete output folder
+  const outputDir = path.join(process.cwd(), "output", id);
+  if (fs.existsSync(outputDir)) {
+    fs.rmSync(outputDir, { recursive: true, force: true });
+  }
 
   // Delete in order: logs, references, tasks, project
   await db.delete(logs).where(eq(logs.projectId, projectId));

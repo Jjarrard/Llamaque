@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState, useRef, useCallback } from "react";
-import { useParams } from "next/navigation";
+import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./project.module.css";
 
@@ -82,6 +82,106 @@ const badgeClass: Record<string, string> = {
   done: styles.badgeDone,
 };
 
+/** Derive a single human-readable status string from task list + project state */
+function deriveCurrentStatus(
+  taskList: Task[],
+  projectStatus: string,
+  running: boolean,
+): {
+  label: string;
+  phase: string;
+  color: "muted" | "accent" | "success" | "warning" | "danger";
+} {
+  if (projectStatus === "done") {
+    return {
+      label: "Complete — all tasks done",
+      phase: "done",
+      color: "success",
+    };
+  }
+
+  if (!running && taskList.length === 0) {
+    return { label: "Ready to start", phase: "idle", color: "muted" };
+  }
+
+  const hasAwaiting = taskList.some((t) => t.status === "awaiting_approval");
+  const stuckTasks = taskList.filter((t) => t.status === "stuck");
+  const executingTasks = taskList.filter((t) => t.status === "executing");
+  const qaTasks = taskList.filter((t) => t.status === "qa_check");
+  const editingTasks = taskList.filter((t) => t.status === "editing");
+  const decomposingTasks = taskList.filter((t) => t.status === "decomposing");
+  const doneTasks = taskList.filter((t) => t.status === "done");
+  const totalTasks = taskList.length;
+
+  if (stuckTasks.length > 0 && !running) {
+    return {
+      label: `${stuckTasks.length} task${stuckTasks.length > 1 ? "s" : ""} stuck — needs attention`,
+      phase: "stuck",
+      color: "danger",
+    };
+  }
+
+  if (hasAwaiting && !running) {
+    return {
+      label: "Awaiting approval on epics",
+      phase: "approval",
+      color: "warning",
+    };
+  }
+
+  if (!running && totalTasks > 0) {
+    return {
+      label: `Paused — ${doneTasks.length}/${totalTasks} tasks done`,
+      phase: "paused",
+      color: "muted",
+    };
+  }
+
+  // Running states
+  if (decomposingTasks.length > 0) {
+    return {
+      label: "Decomposing — breaking down into tasks…",
+      phase: "decompose",
+      color: "accent",
+    };
+  }
+
+  if (executingTasks.length > 0) {
+    const name = executingTasks[0].description.slice(0, 50);
+    return { label: `Executing — ${name}…`, phase: "execute", color: "accent" };
+  }
+
+  if (qaTasks.length > 0) {
+    return {
+      label: `QA checking — reviewing output…`,
+      phase: "qa",
+      color: "accent",
+    };
+  }
+
+  if (editingTasks.length > 0) {
+    return {
+      label: `Editing — fixing QA issues…`,
+      phase: "edit",
+      color: "accent",
+    };
+  }
+
+  if (running) {
+    return {
+      label: `Running — ${doneTasks.length}/${totalTasks} tasks done`,
+      phase: "running",
+      color: "accent",
+    };
+  }
+
+  return {
+    label: `${doneTasks.length}/${totalTasks} tasks done`,
+    phase: "idle",
+    color: "muted",
+  };
+}
+
 /** Build a tree from flat task list */
 function buildTree(tasks: Task[]) {
   const byParent = new Map<number | null, Task[]>();
@@ -95,6 +195,7 @@ function buildTree(tasks: Task[]) {
 
 export default function ProjectPage() {
   const params = useParams();
+  const router = useRouter();
   const projectId = params.id as string;
 
   const [project, setProject] = useState<Project | null>(null);
@@ -106,6 +207,8 @@ export default function ProjectPage() {
     Record<number, LogDetail | null>
   >({});
   const [openAccordions, setOpenAccordions] = useState<Set<number>>(new Set());
+  const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
+  const [resetStage, setResetStage] = useState<string | null>(null);
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -288,6 +391,28 @@ export default function ProjectPage() {
     fetchProject();
   };
 
+  const handleDeleteProject = async () => {
+    await fetch(`/api/projects/${projectId}`, { method: "DELETE" });
+    router.push("/");
+  };
+
+  const handleResetStage = async (stage: string) => {
+    setResetStage(null);
+    setError(null);
+    const res = await fetch(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "reset_stage", stage }),
+    });
+    if (res.ok) {
+      setLogEntries([]);
+      fetchProject();
+    } else {
+      const data = await res.json();
+      setError(data.error || "Failed to reset stage");
+    }
+  };
+
   // Compute what's available for stage buttons
   const hasAwaitingApproval = taskList.some(
     (t) => t.status === "awaiting_approval",
@@ -297,6 +422,18 @@ export default function ProjectPage() {
   const hasReadyTasks = taskList.some((t) =>
     ["ready", "executing", "qa_check"].includes(t.status),
   );
+
+  const currentStatus = project
+    ? deriveCurrentStatus(taskList, project.status, running)
+    : { label: "Loading…", phase: "idle", color: "muted" as const };
+
+  const statusColorClass: Record<string, string> = {
+    muted: styles.statusBarMuted,
+    accent: styles.statusBarAccent,
+    success: styles.statusBarSuccess,
+    warning: styles.statusBarWarning,
+    danger: styles.statusBarDanger,
+  };
 
   const tree = buildTree(taskList);
 
@@ -421,64 +558,163 @@ export default function ProjectPage() {
             </span>
           </h1>
         </div>
-        <div className={styles.controls}>
-          {!running ? (
-            <>
-              {taskList.length === 0 && (
-                <button
-                  className={styles.runBtn}
-                  onClick={() => handleRun("decompose")}
-                >
-                  1. Decompose
-                </button>
-              )}
-              {hasAwaitingApproval && (
-                <button
-                  className={styles.approveAllBtn}
-                  onClick={handleApproveAll}
-                >
-                  Approve All Epics
-                </button>
-              )}
-              {hasPendingAtDepth(1) && (
-                <button
-                  className={styles.stageBtn}
-                  onClick={() => handleRun("breakdown", 1)}
-                >
-                  Epics → Features
-                </button>
-              )}
-              {hasPendingAtDepth(2) && (
-                <button
-                  className={styles.stageBtn}
-                  onClick={() => handleRun("breakdown", 2)}
-                >
-                  Features → Tasks
-                </button>
-              )}
-              {hasReadyTasks && (
-                <button
-                  className={styles.stageBtn}
-                  onClick={() => handleRun("execute")}
-                >
-                  Execute Tasks
-                </button>
-              )}
-              {taskList.length > 0 && !hasAwaitingApproval && (
-                <button
-                  className={styles.runBtn}
-                  onClick={() => handleRun("all")}
-                >
-                  Run All
-                </button>
-              )}
-            </>
-          ) : (
-            <button className={styles.stopBtn} onClick={handleStop}>
-              Stop
-            </button>
-          )}
+        <div className={styles.topBarActions}>
+          <button
+            className={styles.deleteBtn}
+            onClick={() => setShowDeleteConfirm(true)}
+            title="Delete project"
+          >
+            🗑 Delete
+          </button>
         </div>
+      </div>
+
+      {/* Status Bar */}
+      <div
+        className={`${styles.statusBar} ${statusColorClass[currentStatus.color] || styles.statusBarMuted}`}
+      >
+        <span className={styles.statusBarText}>
+          {currentStatus.color === "accent" && (
+            <span className={styles.statusBarPulse}>●</span>
+          )}
+          {currentStatus.label}
+        </span>
+        {!running && taskList.length > 0 && (
+          <div className={styles.statusBarActions}>
+            <button
+              className={styles.rerunBtn}
+              onClick={() => setResetStage("execute")}
+              title="Re-run execution"
+            >
+              ↻ Re-run Execute
+            </button>
+            <button
+              className={styles.rerunBtn}
+              onClick={() => setResetStage("breakdown")}
+              title="Re-run breakdown"
+            >
+              ↻ Re-run Breakdown
+            </button>
+            <button
+              className={styles.rerunBtn}
+              onClick={() => setResetStage("decompose")}
+              title="Start over from scratch"
+            >
+              ↻ Start Over
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* Confirm reset dialog */}
+      {resetStage && (
+        <div className={styles.confirmOverlay}>
+          <div className={styles.confirmDialog}>
+            <p className={styles.confirmText}>
+              Re-run <strong>{resetStage}</strong> stage? This will delete
+              generated data from this stage onward and re-run it.
+            </p>
+            <div className={styles.confirmActions}>
+              <button
+                className={styles.confirmYes}
+                onClick={() => handleResetStage(resetStage)}
+              >
+                Yes, re-run
+              </button>
+              <button
+                className={styles.confirmNo}
+                onClick={() => setResetStage(null)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      {/* Confirm delete dialog */}
+      {showDeleteConfirm && (
+        <div className={styles.confirmOverlay}>
+          <div className={styles.confirmDialog}>
+            <p className={styles.confirmText}>
+              Delete <strong>{project.name}</strong>? This will permanently
+              remove the project, all tasks, logs, and output files.
+            </p>
+            <div className={styles.confirmActions}>
+              <button
+                className={styles.confirmDanger}
+                onClick={handleDeleteProject}
+              >
+                Delete permanently
+              </button>
+              <button
+                className={styles.confirmNo}
+                onClick={() => setShowDeleteConfirm(false)}
+              >
+                Cancel
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
+      <div className={styles.controls}>
+        {!running ? (
+          <>
+            {taskList.length === 0 && (
+              <button
+                className={styles.runBtn}
+                onClick={() => handleRun("decompose")}
+              >
+                1. Decompose
+              </button>
+            )}
+            {hasAwaitingApproval && (
+              <button
+                className={styles.approveAllBtn}
+                onClick={handleApproveAll}
+              >
+                Approve All Epics
+              </button>
+            )}
+            {hasPendingAtDepth(1) && (
+              <button
+                className={styles.stageBtn}
+                onClick={() => handleRun("breakdown", 1)}
+              >
+                Epics → Features
+              </button>
+            )}
+            {hasPendingAtDepth(2) && (
+              <button
+                className={styles.stageBtn}
+                onClick={() => handleRun("breakdown", 2)}
+              >
+                Features → Tasks
+              </button>
+            )}
+            {hasReadyTasks && (
+              <button
+                className={styles.stageBtn}
+                onClick={() => handleRun("execute")}
+              >
+                Execute Tasks
+              </button>
+            )}
+            {taskList.length > 0 && !hasAwaitingApproval && (
+              <button
+                className={styles.runBtn}
+                onClick={() => handleRun("all")}
+              >
+                Run All
+              </button>
+            )}
+          </>
+        ) : (
+          <button className={styles.stopBtn} onClick={handleStop}>
+            Stop
+          </button>
+        )}
       </div>
 
       {error && <div className={styles.error}>{error}</div>}

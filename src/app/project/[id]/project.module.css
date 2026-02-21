@@ -26,11 +26,6 @@
   font-weight: 600;
 }
 
-.controls {
-  display: flex;
-  gap: 0.5rem;
-}
-
 .runBtn {
   background: var(--accent);
   color: white;
@@ -564,4 +559,201 @@
   color: var(--danger);
   font-size: 0.85rem;
   margin-bottom: 1rem;
+}
+
+/* ── Top bar actions (delete button etc.) ── */
+.topBarActions {
+  display: flex;
+  gap: 0.5rem;
+  align-items: center;
+}
+
+.deleteBtn {
+  background: transparent;
+  color: var(--danger);
+  padding: 0.4rem 0.8rem;
+  border-radius: var(--radius);
+  font-size: 0.8rem;
+  font-weight: 500;
+  border: 1px solid var(--danger);
+  transition:
+    background 0.2s,
+    color 0.2s;
+}
+
+.deleteBtn:hover {
+  background: var(--danger);
+  color: white;
+}
+
+/* ── Pipeline Breadcrumbs ── */
+/* ── Status Bar ── */
+.statusBar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem;
+  margin-bottom: 1rem;
+  padding: 0.6rem 1rem;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+}
+
+.statusBarText {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-weight: 500;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.statusBarPulse {
+  animation: pulse 1.2s infinite;
+  font-size: 0.75rem;
+  line-height: 1;
+}
+
+.statusBarMuted {
+  color: var(--text-muted);
+}
+
+.statusBarAccent {
+  color: var(--accent);
+  border-color: rgba(99, 102, 241, 0.25);
+}
+
+.statusBarSuccess {
+  color: var(--success);
+  border-color: rgba(34, 197, 94, 0.25);
+}
+
+.statusBarWarning {
+  color: var(--warning);
+  border-color: rgba(234, 179, 8, 0.25);
+}
+
+.statusBarDanger {
+  color: var(--danger);
+  border-color: rgba(239, 68, 68, 0.25);
+}
+
+.statusBarActions {
+  display: flex;
+  gap: 0.35rem;
+  flex-shrink: 0;
+}
+
+.rerunBtn {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.25rem 0.6rem;
+  border-radius: var(--radius);
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  transition:
+    background 0.15s,
+    color 0.15s,
+    border-color 0.15s;
+  white-space: nowrap;
+}
+
+.rerunBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}
+
+/* ── Controls row (moved out of topBar) ── */
+.controls {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1rem;
+  flex-wrap: wrap;
+}
+
+/* ── Confirm dialogs ── */
+.confirmOverlay {
+  position: fixed;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  z-index: 100;
+  backdrop-filter: blur(4px);
+}
+
+.confirmDialog {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  padding: 1.5rem;
+  max-width: 420px;
+  width: 90%;
+}
+
+.confirmText {
+  font-size: 0.9rem;
+  margin-bottom: 1rem;
+  line-height: 1.5;
+  color: var(--text);
+}
+
+.confirmActions {
+  display: flex;
+  gap: 0.5rem;
+  justify-content: flex-end;
+}
+
+.confirmYes {
+  background: var(--accent);
+  color: white;
+  padding: 0.45rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: none;
+  transition: background 0.2s;
+}
+
+.confirmYes:hover {
+  background: var(--accent-hover);
+}
+
+.confirmDanger {
+  background: var(--danger);
+  color: white;
+  padding: 0.45rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: none;
+  transition: background 0.2s;
+}
+
+.confirmDanger:hover {
+  background: #dc2626;
+}
+
+.confirmNo {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  padding: 0.45rem 1rem;
+  border-radius: var(--radius);
+  font-size: 0.85rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  transition:
+    background 0.2s,
+    color 0.2s;
+}
+
+.confirmNo:hover {
+  background: var(--border);
+  color: var(--text);
 }
