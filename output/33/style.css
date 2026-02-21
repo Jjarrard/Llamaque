@@ -1,0 +1,116 @@
+  /* Form styling */
+  #task-form {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    margin-bottom: 2rem;
+  }
+  
+  #task-input {
+    padding: 0.5rem;
+    border: none;
+    border-radius: 5px;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.1);
+    width: 100%;
+    margin-bottom: 1rem;
+  }
+  
+  #task-input::placeholder {
+    color: #aaa;
+  }
+  
+  #task-form button[type="submit"] {
+    background-color: #4CAF50;
+    color: white;
+    padding: 1rem 2rem;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    margin-top: 1rem;
+  }
+  
+  #task-form button[type="submit"]:hover {
+    background-color: #4caf50;
+  }
+  
+  /* Task list styling */
+  #task-list {
+    list-style: none;
+    padding: 0;
+    margin: 0;
+  }
+  
+  #task-list li {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    border-bottom: 1px solid #ccc;
+    padding: 1rem;
+  }
+  
+  #task-list li:last-child {
+    border-bottom: none;
+  }
+  
+  #task-list li input[type="checkbox"] {
+    margin-right: 1rem;
+  }
+  
+  #task-list li button {
+    background-color: #4CAF50;
+    color: white;
+    padding: 0.5rem 1rem;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+  }
+  
+  #task-list li button:hover {
+    background-color: #4caf50;
+  }
+  
+  /* Responsive styles */
+  @media (max-width: 768px) {
+    #task-form {
+      flex-direction: column;
+    }
+    
+    #task-input {
+      margin-bottom: 1rem;
+    }
+    
+    #task-form button[type="submit"] {
+      width: 100%;
+      margin-top: 0;
+    }
+  }
+  
+  /* Accessibility styles */
+  .sr-only {
+    position: absolute !important;
+    height: 1px;
+    width: 1px;
+    overflow: hidden;
+    clip: rect(1px, 1px, 1px, 1px);
+  }
+  
+  /* Modern styles */
+  .flex-container {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+  }
+  
+  .flex-item {
+    margin-right: 2rem;
+  }
+  
+  .hover-state {
+    transition: background-color 0.3s ease;
+  }
+  
+  .hover-state:hover {
+    background-color: #4CAF50;
+  }
+
+I have fixed the invalid syntax and added closing braces to the CSS rules, resulting in a complete style.css file with modern styles, accessibility styles, responsive styles, and form and task list styling.

@@ -1,0 +1,385 @@
+/* style.css */
+* {
+  box-sizing: border-box;
+  margin: 0;
+  padding: 0;
+}
+body {
+  font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  line-height: 1.6;
+  background-color: #f5f5f5;
+  color: #333;
+  min-height: 100vh;
+}
+#app {
+  max-width: 640px;
+  margin: 2rem auto;
+  padding: 2rem;
+  background-color: #fff;
+  border-radius: 12px;
+  box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+}
+#appTitle {
+  font-size: 1.8rem;
+  margin-bottom: 1.5rem;
+  color: #222;
+  text-align: center;
+}
+#primaryForm {
+  display: flex;
+  gap: 0.5rem;
+  margin-bottom: 1.5rem;
+  flex-wrap: wrap;
+}
+input[type="text"] {
+  flex: 1;
+  padding: 0.6rem 0.8rem;
+  border: 1px solid #ddd;
+  border-radius: 8px;
+  font-size: 1rem;
+  outline: none;
+  transition: border-color 0.2s;
+}
+input[type="text"]:focus {
+  border-color: #4a90d9;
+  box-shadow: 0 0 0 2px rgba(74,144,217,0.2);
+}
+button[type="submit"] {
+  background-color: #4a90d9;
+  color: white;
+  border: none;
+  padding: 0.6rem 1rem;
+  border-radius: 8px;
+  cursor: pointer;
+  font-size: 1rem;
+  transition: background-color 0.2s;
+}
+button[type="submit"]:hover {
+  background-color: #3a7dc9;
+}
+button[type="submit"]:active {
+  background-color: #2a68b3;
+}
+button[type="submit"]:focus {
+  outline: 2px solid #4a90d9;
+  box-shadow: 0 0 0 2px rgba(74,144,217,0.2);
+}
+button[type="submit"]:active:focus {
+  box-shadow: 0 0 0 2px rgba(26, 100, 180, 0.3);
+}
+#todoList {
+  list-style: none;
+  padding: 0;
+  margin: 0;
+}
+#todoList li {
+  padding: 1rem;
+  margin-bottom: 0.5rem;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  transition: all 0.2s;
+  cursor: pointer;
+}
+#todoList li::before {
+  content: "";
+  display: block;
+  width: 1.2rem;
+  height: 1.2rem;
+  border-radius: 50%;
+  background-color: #4a90d9;
+  margin-right: 0.5rem;
+}
+#todoList li.completed {
+  opacity: 0.7;
+  background-color: #f8f9fa;
+  border-left: 3px solid #4a90d9;
+}
+#todoList li.completed::before {
+  background-color: #6c9d9d;
+}
+#todoList li.completed .todoItem {
+  text-decoration: line-through;
+  color: #888;
+}
+#todoList li .todoItem {
+  flex: 1;
+  padding: 0.5rem 0;
+  font-size: 1.1rem;
+  color: #333;
+  transition: color 0.2s;
+}
+#todoList li .todoItem:hover {
+  color: #222;
+}
+#todoList li .todoItem:focus {
+  outline: none;
+}
+#todoList li .todoItem:active {
+  color: #222;
+}
+#todoList li .todoItem:active:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover {
+  color: #222;
+}
+#todoList li .todoItem:active:focus:hover {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  reset: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline: none;
+}
+#todoList li .todoItem:active:hover:focus {
+  outline:
+}

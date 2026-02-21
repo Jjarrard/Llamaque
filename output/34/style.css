@@ -1,0 +1,74 @@
+  /* style.css */
+  body {
+    margin: 0;
+    font-family: Arial, sans-serif;
+    line-height: 1.4;
+  }
+  #app {
+    max-width: 800px;
+    margin: 0 auto;
+    padding: 1rem;
+  }
+  input {
+    padding: 0.6rem;
+    border: 1px solid #ccc;
+    border-radius: 8px;
+  }
+  #itemsList {
+    list-style: none;
+    padding: 0;
+    margin: 1rem 0;
+  }
+  /* Form styling */
+  #primaryForm {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 2rem;
+  }
+  #primaryInput {
+    flex: 1;
+    padding: 0.6rem;
+    border: none;
+    border-radius: 8px;
+    font-size: 1rem;
+  }
+  #primaryActionButton {
+    background-color: #4CAF50;
+    color: white;
+    padding: 0.6rem 1rem;
+    border: none;
+    border-radius: 8px;
+    cursor: pointer;
+    transition: all 0.2s ease-in-out;
+  }
+  #primaryActionButton:hover {
+    background-color: #4CAF50;
+    color: white;
+    box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+  }
+  /* Task list styling */
+  .task {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    margin-bottom: 1rem;
+  }
+  .task input[type="checkbox"] {
+    margin-right: 0.5rem;
+  }
+  .task label {
+    flex: 1;
+    font-size: 1rem;
+  }
+  /* Task list styling for completed tasks */
+  .completed {
+    text-decoration: line-through;
+    color: #999;
+  }
+  /* Update UI to reflect deleted task */
+  .deleted {
+    opacity: 0.5;
+    pointer-events: none;
+  }
+}

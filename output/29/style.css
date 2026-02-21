@@ -1,0 +1,120 @@
+* {
+  box-sizing: border-box;
+}
+
+body {
+  font-family: Arial, sans-serif;
+  background-color: #f0f0f0;
+}
+
+h1 {
+  text-align: center;
+}
+
+form {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 20px 0;
+}
+
+#todoForm input[type="text"] {
+  padding: 10px;
+  font-size: 18px;
+  border: none;
+  border-radius: 5px;
+  width: 50%;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.2);
+}
+
+#todoForm button[type="submit"] {
+  padding: 10px 20px;
+  background-color: #4CAF50;
+  color: white;
+  border: none;
+  border-radius: 5px;
+  cursor: pointer;
+}
+
+#todoForm button[type="submit"]:hover {
+  background-color: #3e8e41;
+}
+
+#todoList {
+  list-style: none;
+  padding: 0;
+  margin: 20px 0;
+}
+
+.todoListItem {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 10px 0;
+  padding: 10px;
+  border-bottom: 1px solid #ccc;
+}
+
+.todoListItem input {
+  margin-right: 20px;
+}
+
+.completed {
+  text-decoration: line-through;
+  color: gray;
+}
+
+footer {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  margin: 20px 0;
+}
+
+#completedCount {
+  font-size: 18px;
+  color: gray;
+}
+
+.filter {
+  display: flex;
+  justify-content: space-between;
+  align-items: center;
+  margin: 20px 0;
+}
+
+.filter input[type="radio"] {
+  margin-right: 10px;
+}
+
+.filter label {
+  font-size: 18px;
+}
+
+@media (min-width: 500px) {
+  form {
+    flex-direction: row;
+  }
+  
+  #todoForm input[type="text"] {
+    width: auto;
+  }
+  
+  #todoForm button[type="submit"] {
+    width: 100px;
+  }
+}
+
+@media (min-width: 800px) {
+  .filter {
+    flex-direction: row;
+  }
+  
+  .filter input[type="radio"] {
+    margin-right: 20px;
+  }
+  
+  .filter label {
+    font-size: 18px;
+  }
+}

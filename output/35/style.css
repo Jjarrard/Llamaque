@@ -1,0 +1,21 @@
+/* style.css */
+body {
+  margin: 0;
+  font-family: Arial, sans-serif;
+  line-height: 1.4;
+}
+#app {
+  max-width: 800px;
+  margin: 0 auto;
+  padding: 1rem;
+}
+input {
+  padding: 0.6rem;
+  border: 1px solid #ccc;
+  border-radius: 8px;
+}
+#itemsList {
+  list-style: none;
+  padding: 0;
+  margin: 1rem 0;
+}
