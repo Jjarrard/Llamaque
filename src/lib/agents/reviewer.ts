@@ -1,17 +1,18 @@
 import { callOllama } from "@/lib/ollama";
 
-const SYSTEM_PROMPT = `You are a Feature Reviewer. Given a user's project request and numbered epics, reply with the NUMBERS to KEEP.
+const SYSTEM_PROMPT = `You are a Feature Reviewer. Given a user's project request and numbered epics, reply with the NUMBERS to REMOVE.
 
 Rules:
+- REMOVE only epics that are completely unrelated to the user's project or exact duplicates.
 - KEEP epics that directly relate to the user's project.
 - KEEP supporting features (styling, interactivity) every web app needs.
-- REMOVE only epics that are completely unrelated or exact duplicates.
-- When in doubt, KEEP.
+- When in doubt, KEEP — do NOT remove.
+- Most of the time, ALL epics are good and nothing should be removed.
 
-Reply with ONLY a comma-separated list of numbers to keep. Example:
-KEEP: 1, 2, 3, 5
+Reply with ONLY a comma-separated list of numbers to REMOVE. Example:
+REMOVE: 3, 5
 
-If ALL epics are good, reply: KEEP: ALL`;
+If ALL epics are good (which is common), reply: REMOVE: NONE`;
 
 export interface ReviewResult {
   kept: string[];
@@ -33,7 +34,7 @@ export async function runReviewer(
 Proposed epics:
 ${featureList}
 
-Which numbers do we KEEP?`;
+Which numbers should we REMOVE? (Reply REMOVE: NONE if all are good)`;
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,
@@ -46,25 +47,33 @@ Which numbers do we KEEP?`;
   // Strip >> prefill prefix from all lines
   const cleaned = text.replace(/^>>\s*/gm, "").trim();
 
-  // Check for "ALL" response
-  if (/\bALL\b/i.test(cleaned)) {
+  // Check for "NONE" response — keep everything
+  if (/\bNONE\b/i.test(cleaned) || /\bALL\b/i.test(cleaned)) {
     return { kept: features, raw: text, prompt, tokens, durationMs };
   }
 
-  // Extract all numbers from the response
+  // Extract all numbers from the response (these are indices to REMOVE)
   const numbers = cleaned.match(/\d+/g);
   if (!numbers) {
     // Parsing failed — safe fallback: keep everything
     return { kept: features, raw: text, prompt, tokens, durationMs };
   }
 
-  const kept: string[] = [];
+  const toRemove = new Set<number>();
   for (const numStr of numbers) {
     const idx = parseInt(numStr, 10) - 1; // 1-indexed → 0-indexed
-    if (idx >= 0 && idx < features.length && !kept.includes(features[idx])) {
-      kept.push(features[idx]);
+    if (idx >= 0 && idx < features.length) {
+      toRemove.add(idx);
     }
   }
+
+  // Safety: if the reviewer would remove more than half, it probably misunderstood.
+  // Fall back to keeping everything.
+  if (toRemove.size > features.length / 2) {
+    return { kept: features, raw: text, prompt, tokens, durationMs };
+  }
+
+  const kept = features.filter((_, i) => !toRemove.has(i));
 
   // If we ended up with nothing, keep everything (safe fallback)
   if (kept.length === 0) {
