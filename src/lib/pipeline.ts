@@ -6,8 +6,10 @@
  *   2. PLAN — Manager breaks each epic into 2-3 file-targeted features
  *   3. MERGE — Programmatic: group features by file, deduplicate, cap at 8
  *   4. EXECUTE — Sequential: one requirement at a time per file (HTML → CSS → JS)
- *   5. IMPROVE — Improver reviews all files for cross-file bugs
- *   6. CONSISTENCY — Programmatic cross-file validation + auto-fix
+ *   5. REVIEW — Programmatic quality checks + LLM holistic review
+ *   6. ITERATIVE QA — Find one bug → fix → repeat (up to 5 rounds)
+ *   7. IMPROVE — Improver reviews all files for remaining bugs
+ *   8. CONSISTENCY — Programmatic cross-file validation + auto-fix
  *
  * The HTML file IS the contract: CSS and JS get full HTML context.
  */
@@ -20,6 +22,8 @@ import { runReviewer } from "@/lib/agents/reviewer";
 import { runImprover } from "@/lib/agents/improver";
 import { runManager } from "@/lib/agents/manager";
 import { runDeveloper } from "@/lib/agents/developer";
+import { runHolisticReview } from "@/lib/agents/holistic-reviewer";
+import { runIterativeQA } from "@/lib/agents/iterative-qa";
 import {
   validateOutput,
   autoRepairOutput,
@@ -56,7 +60,12 @@ const TEMPLATE_FILES = ["index.html", "style.css", "script.js"] as const;
 /** File write order — HTML first so CSS/JS can reference its selectors */
 const FILE_ORDER = ["index.html", "style.css", "script.js"] as const;
 
-export type PipelineStage = "all" | "decompose" | "breakdown" | "execute";
+export type PipelineStage =
+  | "all"
+  | "decompose"
+  | "breakdown"
+  | "execute"
+  | "qa";
 
 export type PipelineEvent = {
   type: string;
@@ -75,6 +84,7 @@ export class Pipeline {
   private breakdownDepth: number | null = null;
   private projectName: string = "";
   private projectDescription: string = "";
+  private customInstructions: string = "";
   private deterministicDraftByFile: Record<string, string> = {};
 
   constructor(projectId: number, model: string, onEvent: EventCallback) {
@@ -85,6 +95,27 @@ export class Pipeline {
 
   abort() {
     this.aborted = true;
+  }
+
+  /** Mark a user-facing stage as complete in the project record */
+  private async markStageComplete(stage: string) {
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, this.projectId),
+    });
+    const stages: string[] = JSON.parse(project?.completedStages || "[]");
+    if (!stages.includes(stage)) {
+      stages.push(stage);
+      await db
+        .update(projects)
+        .set({ completedStages: JSON.stringify(stages) })
+        .where(eq(projects.id, this.projectId));
+    }
+  }
+
+  /** Appends custom instructions to a message if present */
+  private withCustomInstructions(message: string): string {
+    if (!this.customInstructions) return message;
+    return `${message}\n\nADDITIONAL USER INSTRUCTIONS:\n${this.customInstructions}`;
   }
 
   private emit(type: string, data: Record<string, unknown>) {
@@ -245,6 +276,7 @@ export class Pipeline {
 
     this.projectName = project.name;
     this.projectDescription = project.description;
+    this.customInstructions = project.customInstructions || "";
 
     await db
       .update(projects)
@@ -255,10 +287,32 @@ export class Pipeline {
       where: eq(tasks.projectId, this.projectId),
     });
 
+    // Clear the current stage and all downstream stages from completedStages
+    // so the tracker shows them as pending/active again.
+    // For "all" with existing tasks, decompose is already done — start from breakdown.
+    const STAGE_ORDER = ["decompose", "breakdown", "execute", "qa"];
+    const currentStages: string[] = JSON.parse(project.completedStages || "[]");
+    let effectiveStage: string;
+    if (stage === "all") {
+      effectiveStage = existingTasks.length === 0 ? "decompose" : "breakdown";
+    } else {
+      effectiveStage = stage;
+    }
+    const idx = STAGE_ORDER.indexOf(effectiveStage);
+    if (idx >= 0) {
+      const toRemove = new Set(STAGE_ORDER.slice(idx));
+      const kept = currentStages.filter((s) => !toRemove.has(s));
+      await db
+        .update(projects)
+        .set({ completedStages: JSON.stringify(kept) })
+        .where(eq(projects.id, this.projectId));
+    }
+
     if (existingTasks.length === 0) {
       await this.createScaffold();
       await this.log("PM", "Breaking down idea into epics...");
       await this.decompose(project.name, project.description);
+      await this.markStageComplete("decompose");
       if (stage === "decompose") {
         await this.log(
           "SYS",
@@ -284,11 +338,43 @@ export class Pipeline {
       return;
     }
 
-    await this.processAllTasks();
-
-    if (this.stage === "all" || this.stage === "execute") {
+    // QA-only pass: skip task processing, just run review + iterative QA + improve + consistency
+    if (stage === "qa") {
+      await this.log(
+        "SYS",
+        "Running QA pass (review + iterative QA + improve + consistency)...",
+      );
+      await this.runHolisticReviewPass();
+      await this.runIterativeQAPass();
       await this.runImprovementPass();
       await this.runConsistencyCheck();
+      await this.markStageComplete("qa");
+      await db
+        .update(projects)
+        .set({ status: "done" })
+        .where(eq(projects.id, this.projectId));
+      this.emit("pipeline_done", { projectId: this.projectId });
+      return;
+    }
+
+    await this.processAllTasks();
+
+    // Breakdown is an intermediate step — always pause so user can proceed
+    if (this.stage === "breakdown") {
+      await db
+        .update(projects)
+        .set({ status: "paused" })
+        .where(eq(projects.id, this.projectId));
+      this.emit("pipeline_done", { projectId: this.projectId });
+      return;
+    }
+
+    if (this.stage === "all" || this.stage === "execute") {
+      await this.runHolisticReviewPass();
+      await this.runIterativeQAPass();
+      await this.runImprovementPass();
+      await this.runConsistencyCheck();
+      await this.markStageComplete("qa");
     }
 
     const allTasks = await db.query.tasks.findMany({
@@ -315,11 +401,12 @@ export class Pipeline {
   // ─────────────────────────────────────────────
 
   private async decompose(name: string, description: string) {
-    let result = await runProjectManager(this.model, name, description);
+    const desc = this.withCustomInstructions(description);
+    let result = await runProjectManager(this.model, name, desc);
 
     if (!result.block) {
       await this.log("PM", "Failed to parse response, retrying...");
-      result = await runProjectManager(this.model, name, description);
+      result = await runProjectManager(this.model, name, desc);
     }
 
     if (!result.block) {
@@ -394,6 +481,7 @@ export class Pipeline {
 
     if (this.stage === "all" || this.stage === "breakdown") {
       await this.planAll();
+      await this.markStageComplete("breakdown");
     }
 
     if (this.aborted) return;
@@ -408,6 +496,7 @@ export class Pipeline {
 
     if (this.stage === "all" || this.stage === "execute") {
       await this.mergeAndExecute();
+      await this.markStageComplete("execute");
     }
   }
 
@@ -469,7 +558,9 @@ export class Pipeline {
     let result = await runManager(
       this.model,
       task.description,
-      `Project: ${this.projectName} — ${this.projectDescription}`,
+      this.withCustomInstructions(
+        `Project: ${this.projectName} — ${this.projectDescription}`,
+      ),
     );
 
     if (!result.block && task.parseRetryCount < MAX_PARSE_RETRIES) {
@@ -952,6 +1043,8 @@ export class Pipeline {
       if (i === 0 && qaReason) {
         userMessage += `\n\nWARNING: Previous version failed QA: ${qaReason}. Avoid this issue.`;
       }
+
+      userMessage = this.withCustomInstructions(userMessage);
 
       const result = await runDeveloper(this.model, userMessage, filePath);
 
@@ -1576,7 +1669,537 @@ export class Pipeline {
   }
 
   // ─────────────────────────────────────────────
-  //  PHASE 5: IMPROVE (Cross-file bug review)
+  //  PHASE 5: HOLISTIC REVIEW (Programmatic quality checks + LLM review)
+  // ─────────────────────────────────────────────
+
+  /**
+   * Programmatic checks for common structural/quality problems that
+   * small LLMs produce but can't reliably detect in their own output.
+   */
+  private checkOutputQuality(
+    html: string,
+    css: string,
+    js: string,
+  ): { file: string; issue: string }[] {
+    const issues: { file: string; issue: string }[] = [];
+
+    // ── HTML structural checks ──
+    if (html) {
+      // Elements outside the main container (body > direct children that aren't the container)
+      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
+      if (bodyMatch) {
+        const bodyContent = bodyMatch[1];
+        // Count direct child elements (rough heuristic)
+        const topLevelTags = bodyContent.match(
+          /^\s*<(?!script|link|!--)([\w-]+)/gim,
+        );
+        if (topLevelTags && topLevelTags.length > 3) {
+          issues.push({
+            file: "index.html",
+            issue:
+              "Too many top-level elements in <body> — wrap all content in a single container (e.g. <main> or <div id='app'>) so CSS can center and constrain the layout",
+          });
+        }
+      }
+
+      // Form wrapping non-form content
+      const formBlocks = html.match(/<form[^>]*>[\s\S]*?<\/form>/gi) || [];
+      for (const form of formBlocks) {
+        if (form.includes("<ul") || form.includes("<ol")) {
+          issues.push({
+            file: "index.html",
+            issue:
+              "A <ul> or <ol> list is nested inside a <form> — move the list outside the form so it renders as a separate section",
+          });
+        }
+      }
+
+      // Buttons outside any container
+      const mainOrDiv = /<main|<div\s+id=["']app/i.test(html);
+      if (mainOrDiv) {
+        const outsideButtons = html.match(
+          /<\/main>[\s\S]*?<button|<\/div><!--\s*app\s*-->[\s\S]*?<button/i,
+        );
+        if (outsideButtons) {
+          issues.push({
+            file: "index.html",
+            issue:
+              "One or more <button> elements appear outside the main container — move them inside so they inherit container styling",
+          });
+        }
+      }
+    }
+
+    // ── CSS quality checks ──
+    if (css) {
+      const cssLower = css.toLowerCase();
+      const cssLines = css.split("\n").length;
+
+      // Barely any CSS
+      if (cssLines < 10 || css.trim().length < 150) {
+        issues.push({
+          file: "style.css",
+          issue:
+            "CSS file is nearly empty or minimal — add proper styling: body layout, font, colors, spacing for all elements, button hover states, and input focus states",
+        });
+      } else {
+        // No body styling
+        if (!cssLower.includes("body")) {
+          issues.push({
+            file: "style.css",
+            issue:
+              "No body CSS rule — add body styling with font-family, background-color, and centered layout",
+          });
+        }
+
+        // No max-width / centering for main container
+        if (
+          !cssLower.includes("max-width") &&
+          !cssLower.includes("margin: 0 auto") &&
+          !cssLower.includes("margin:0 auto") &&
+          !cssLower.includes("margin: auto")
+        ) {
+          issues.push({
+            file: "style.css",
+            issue:
+              "No container centering (max-width + margin auto) — the content will stretch full-width on large screens. Add a centered container with max-width",
+          });
+        }
+
+        // No button styling
+        if (!cssLower.includes("button") && !cssLower.includes("btn")) {
+          issues.push({
+            file: "style.css",
+            issue:
+              "No button styling — add button rules with padding, border-radius, background-color, hover state, and cursor: pointer",
+          });
+        }
+
+        // No hover/focus states at all
+        if (!cssLower.includes(":hover") && !cssLower.includes(":focus")) {
+          issues.push({
+            file: "style.css",
+            issue:
+              "No :hover or :focus states — add hover effects on buttons and focus styles on inputs for better interactivity",
+          });
+        }
+
+        // No input styling
+        if (
+          html &&
+          (html.includes("<input") || html.includes("<textarea")) &&
+          !cssLower.includes("input") &&
+          !cssLower.includes("textarea")
+        ) {
+          issues.push({
+            file: "style.css",
+            issue:
+              "HTML has input/textarea elements but CSS has no input styling — add padding, border, border-radius, and focus state for inputs",
+          });
+        }
+      }
+    } else if (html && html.length > 100) {
+      issues.push({
+        file: "style.css",
+        issue:
+          "CSS file is empty but HTML has content — write complete CSS with body layout, element styling, hover states, and responsive design",
+      });
+    }
+
+    // ── JS checks ──
+    if (js && html) {
+      // Check if JS references IDs that don't exist in HTML
+      const jsIds =
+        js.match(/getElementById\(['"](\w+)['"]\)/g)?.map((m) => {
+          const match = m.match(/['"](\w+)['"]/);
+          return match ? match[1] : null;
+        }) || [];
+
+      for (const id of jsIds) {
+        if (
+          id &&
+          !html.includes(`id="${id}"`) &&
+          !html.includes(`id='${id}'`)
+        ) {
+          issues.push({
+            file: "index.html",
+            issue: `JavaScript references element id="${id}" but it doesn't exist in the HTML — add the missing element or fix the ID`,
+          });
+          break; // One warning is enough
+        }
+      }
+    }
+
+    return issues;
+  }
+
+  private async runHolisticReviewPass() {
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) return;
+
+    const readFile = (name: string) => {
+      const fullPath = path.join(outDir, name);
+      if (!fs.existsSync(fullPath)) return "";
+      return fs.readFileSync(fullPath, "utf-8");
+    };
+
+    const html = readFile("index.html");
+    const css = readFile("style.css");
+    const js = readFile("script.js");
+
+    if (html.trim().length < 20) return;
+
+    await this.log("QA", "Running quality review of full output...");
+
+    // Phase A: Programmatic quality checks (reliable, catches what LLMs miss)
+    const structuralIssues = this.checkOutputQuality(html, css, js);
+
+    // Phase B: LLM holistic review (may find issues the programmatic checks miss)
+    const projectFiles: { path: string; content: string }[] = [];
+    for (const file of TEMPLATE_FILES) {
+      const content = readFile(file);
+      if (content.trim().length > 20) {
+        projectFiles.push({ path: file, content });
+      }
+    }
+
+    let llmIssues: string[] = [];
+    if (projectFiles.length > 0) {
+      const result = await runHolisticReview(
+        this.model,
+        this.projectName,
+        this.projectDescription,
+        projectFiles,
+      );
+
+      await this.log(
+        "QA",
+        `LLM review: ${result.verdict} (${result.tokens} tokens, ${result.durationMs}ms)`,
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+
+      if (result.verdict === "REWORK" && result.issues.length > 0) {
+        llmIssues = result.issues;
+      }
+    }
+
+    // Merge all issues (programmatic + LLM)
+    const allIssues: { file: string; issue: string }[] = [
+      ...structuralIssues,
+      ...llmIssues.map((iss) => ({ file: "unknown", issue: iss })),
+    ];
+
+    if (allIssues.length === 0) {
+      await this.log(
+        "QA",
+        "Quality review PASS — no structural or visual issues found",
+      );
+      return;
+    }
+
+    await this.log(
+      "QA",
+      `Quality review found ${allIssues.length} issue(s) to fix`,
+    );
+    for (const { file, issue } of allIssues) {
+      await this.log("QA", `[${file}] ${issue}`);
+    }
+
+    // Group issues by file
+    const issuesByFile: Record<string, string[]> = {};
+    for (const { file, issue } of allIssues) {
+      if (file === "unknown") {
+        // LLM issues — try to route by keywords
+        const issueLower = issue.toLowerCase();
+        for (const fp of FILE_ORDER) {
+          const keywords: Record<string, string[]> = {
+            "index.html": [
+              "html",
+              "element",
+              "form",
+              "button",
+              "structure",
+              "heading",
+              "container",
+            ],
+            "style.css": [
+              "css",
+              "style",
+              "layout",
+              "spacing",
+              "font",
+              "color",
+              "visual",
+              "margin",
+              "padding",
+            ],
+            "script.js": [
+              "js",
+              "javascript",
+              "function",
+              "event",
+              "click",
+              "listener",
+            ],
+          };
+          if ((keywords[fp] || []).some((kw) => issueLower.includes(kw))) {
+            if (!issuesByFile[fp]) issuesByFile[fp] = [];
+            issuesByFile[fp].push(issue);
+          }
+        }
+      } else {
+        if (!issuesByFile[file]) issuesByFile[file] = [];
+        issuesByFile[file].push(issue);
+      }
+    }
+
+    // Fix each file that has issues
+    for (const filePath of FILE_ORDER) {
+      if (this.aborted) break;
+      const fileIssues = issuesByFile[filePath];
+      if (!fileIssues || fileIssues.length === 0) continue;
+
+      const existingContent = readFile(filePath);
+      if (!existingContent || existingContent.trim().length < 20) continue;
+
+      const htmlContext = this.getHTMLContext(filePath);
+
+      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+      if (htmlContext && filePath !== "index.html") {
+        userMessage += `HTML file:\n${htmlContext}\n\n`;
+      }
+      userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
+      userMessage += `A quality review found these issues:\n`;
+      userMessage += fileIssues.map((iss, i) => `${i + 1}. ${iss}`).join("\n");
+      userMessage += `\n\nFix ALL of these issues and rewrite the COMPLETE ${filePath} file. Keep all working functionality intact.`;
+
+      userMessage = this.withCustomInstructions(userMessage);
+
+      await this.log(
+        "QA",
+        `Reworking ${filePath}: ${fileIssues.length} issue(s)`,
+      );
+
+      const devResult = await runDeveloper(this.model, userMessage, filePath);
+
+      if (devResult.block) {
+        const output = devResult.block.output;
+        const { repaired } = autoRepairOutput(output, filePath);
+        const validation = validateOutput(repaired, filePath);
+        if (validation.valid) {
+          await this.writeOutputFile(filePath, repaired);
+          await this.log(
+            "QA",
+            `Fixed ${filePath} (${devResult.tokens} tokens)`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+        } else {
+          await this.log(
+            "QA",
+            `Fix for ${filePath} failed validation: ${validation.reason} — keeping original`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+        }
+      } else {
+        await this.log(
+          "QA",
+          `Could not fix ${filePath} — Developer parse failure`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+      }
+    }
+
+    await this.log("QA", "Quality review rework complete");
+  }
+
+  // ─────────────────────────────────────────────
+  //  PHASE 6: ITERATIVE QA (find one bug → fix → repeat)
+  // ─────────────────────────────────────────────
+
+  /** Max iterations for the find-one-fix-one QA loop */
+  private static readonly MAX_ITERATIVE_QA_ROUNDS = 5;
+
+  private async runIterativeQAPass() {
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) return;
+
+    const readFile = (name: string) => {
+      const fullPath = path.join(outDir, name);
+      if (!fs.existsSync(fullPath)) return "";
+      return fs.readFileSync(fullPath, "utf-8");
+    };
+
+    const html = readFile("index.html");
+    if (html.trim().length < 20) return;
+
+    await this.log(
+      "QA",
+      "Starting iterative QA (find one bug → fix → repeat)...",
+    );
+
+    const previousFixes: string[] = [];
+    let round = 0;
+
+    while (round < Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
+      round++;
+
+      // Read fresh file contents each round (they change after fixes)
+      const currentFiles: { path: string; content: string }[] = [];
+      for (const file of TEMPLATE_FILES) {
+        const content = readFile(file);
+        if (content.trim().length > 20) {
+          currentFiles.push({ path: file, content });
+        }
+      }
+
+      if (currentFiles.length === 0) break;
+
+      await this.log(
+        "QA",
+        `Round ${round}/${Pipeline.MAX_ITERATIVE_QA_ROUNDS}: looking for issues...`,
+      );
+
+      const result = await runIterativeQA(
+        this.model,
+        this.projectName,
+        this.projectDescription,
+        currentFiles,
+        previousFixes.length > 0 ? previousFixes : undefined,
+      );
+
+      if (!result.issue) {
+        await this.log(
+          "QA",
+          `Round ${round}: No more issues found (${result.tokens} tokens, ${result.durationMs}ms)`,
+          undefined,
+          result.prompt,
+          result.raw,
+        );
+        break;
+      }
+
+      const { file: targetFile, problem, fix } = result.issue;
+      await this.log(
+        "QA",
+        `Round ${round} found: [${targetFile}] ${problem}`,
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+      await this.log("QA", `Fix: ${fix}`);
+
+      // Resolve the file name to one of our template files
+      const resolvedFile = this.resolveTargetFile(targetFile);
+      if (!resolvedFile) {
+        await this.log("QA", `Unknown file "${targetFile}" — skipping`);
+        previousFixes.push(`${problem} (skipped — unknown file)`);
+        continue;
+      }
+
+      // Build fix prompt for the Developer
+      const existingContent = readFile(resolvedFile);
+      if (!existingContent || existingContent.trim().length < 20) {
+        previousFixes.push(`${problem} (skipped — file empty)`);
+        continue;
+      }
+
+      const htmlContext = this.getHTMLContext(resolvedFile);
+
+      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+      if (htmlContext && resolvedFile !== "index.html") {
+        userMessage += `HTML file:\n${htmlContext}\n\n`;
+      }
+      userMessage += `Current ${resolvedFile}:\n${existingContent}\n\n`;
+      userMessage += `QA found this issue:\nProblem: ${problem}\nFix: ${fix}\n\n`;
+      userMessage += `Apply ONLY this fix. Keep everything else exactly the same. Rewrite the COMPLETE ${resolvedFile} file.`;
+
+      userMessage = this.withCustomInstructions(userMessage);
+
+      const devResult = await runDeveloper(
+        this.model,
+        userMessage,
+        resolvedFile,
+      );
+
+      if (devResult.block) {
+        const output = devResult.block.output;
+        const { repaired } = autoRepairOutput(output, resolvedFile);
+        const validation = validateOutput(repaired, resolvedFile);
+        if (validation.valid) {
+          await this.writeOutputFile(resolvedFile, repaired);
+          await this.log(
+            "QA",
+            `Round ${round}: Fixed ${resolvedFile} (${devResult.tokens} tokens)`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+          previousFixes.push(`${problem} → fixed in ${resolvedFile}`);
+        } else {
+          await this.log(
+            "QA",
+            `Round ${round}: Fix for ${resolvedFile} failed validation: ${validation.reason} — keeping original`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+          previousFixes.push(`${problem} (fix failed validation)`);
+        }
+      } else {
+        await this.log(
+          "QA",
+          `Round ${round}: Could not fix ${resolvedFile} — Developer parse failure`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        previousFixes.push(`${problem} (Developer parse failure)`);
+      }
+    }
+
+    if (round >= Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
+      await this.log(
+        "QA",
+        `Iterative QA hit max rounds (${Pipeline.MAX_ITERATIVE_QA_ROUNDS})`,
+      );
+    }
+
+    await this.log(
+      "QA",
+      `Iterative QA complete: ${previousFixes.length} issue(s) addressed in ${round} round(s)`,
+    );
+  }
+
+  /** Map an LLM-returned filename to one of the 3 template files */
+  private resolveTargetFile(name: string): string | null {
+    const n = name.toLowerCase().trim();
+    if (n.includes("html") || n === "index.html") return "index.html";
+    if (n.includes("css") || n === "style.css" || n === "styles.css")
+      return "style.css";
+    if (
+      n.includes("js") ||
+      n === "script.js" ||
+      n === "main.js" ||
+      n === "app.js"
+    )
+      return "script.js";
+    // Check if it matches one of the template files directly
+    for (const f of TEMPLATE_FILES) {
+      if (n === f) return f;
+    }
+    return null;
+  }
+
+  // ─────────────────────────────────────────────
+  //  PHASE 7: IMPROVE (Cross-file bug review)
   // ─────────────────────────────────────────────
 
   private async runImprovementPass() {
@@ -1662,6 +2285,8 @@ export class Pipeline {
         userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
       }
       userMessage += `Fix these bugs and rewrite the COMPLETE ${filePath} file:\n${fixList}`;
+
+      userMessage = this.withCustomInstructions(userMessage);
 
       const devResult = await runDeveloper(this.model, userMessage, filePath);
 
@@ -1781,6 +2406,8 @@ export class Pipeline {
         userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
       }
       userMessage += `Fix these cross-file consistency issues and rewrite the COMPLETE ${filePath} file:\n${fixList}`;
+
+      userMessage = this.withCustomInstructions(userMessage);
 
       const devResult = await runDeveloper(this.model, userMessage, filePath);
 

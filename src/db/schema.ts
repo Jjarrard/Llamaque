@@ -4,12 +4,14 @@ export const projects = sqliteTable("projects", {
   id: integer("id").primaryKey({ autoIncrement: true }),
   name: text("name").notNull(),
   description: text("description").notNull(),
+  customInstructions: text("custom_instructions"),
   status: text("status", {
     enum: ["pending", "running", "paused", "done"],
   })
     .notNull()
     .default("pending"),
   primaryModel: text("primary_model").notNull().default("qwen3:1.7b"),
+  completedStages: text("completed_stages").notNull().default("[]"),
   createdAt: integer("created_at", { mode: "timestamp" })
     .notNull()
     .$defaultFn(() => new Date()),

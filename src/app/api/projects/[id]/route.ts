@@ -44,6 +44,17 @@ export async function PATCH(
   const projectId = parseInt(id, 10);
   const body = await request.json();
 
+  if (body.action === "set_model") {
+    if (!body.model) {
+      return NextResponse.json({ error: "model is required" }, { status: 400 });
+    }
+    await db
+      .update(projects)
+      .set({ primaryModel: body.model })
+      .where(eq(projects.id, projectId));
+    return NextResponse.json({ ok: true });
+  }
+
   if (body.action === "approve_all") {
     await db
       .update(tasks)
@@ -59,6 +70,22 @@ export async function PATCH(
 
   if (body.action === "reset_stage") {
     const stage = body.stage as string;
+
+    // Clear this stage and all downstream stages from completedStages
+    const STAGE_ORDER = ["decompose", "breakdown", "execute", "qa"];
+    const project = await db.query.projects.findFirst({
+      where: eq(projects.id, projectId),
+    });
+    const current: string[] = JSON.parse(project?.completedStages || "[]");
+    const stageIdx = STAGE_ORDER.indexOf(stage);
+    if (stageIdx >= 0) {
+      const toRemove = new Set(STAGE_ORDER.slice(stageIdx));
+      const kept = current.filter((s) => !toRemove.has(s));
+      await db
+        .update(projects)
+        .set({ completedStages: JSON.stringify(kept) })
+        .where(eq(projects.id, projectId));
+    }
 
     if (stage === "decompose") {
       // Delete everything and start fresh

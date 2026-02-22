@@ -1,7 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { db } from "@/db";
-import { projects } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { projects, tasks } from "@/db/schema";
+import { eq, and, inArray } from "drizzle-orm";
 import { Pipeline, PipelineStage } from "@/lib/pipeline";
 import { checkOllamaHealth } from "@/lib/ollama";
 
@@ -13,6 +13,7 @@ const VALID_STAGES: PipelineStage[] = [
   "decompose",
   "breakdown",
   "execute",
+  "qa",
 ];
 
 /**
@@ -78,6 +79,22 @@ export async function POST(
   // Fire and forget
   pipeline.run(stage, breakdownDepth).catch(async (err) => {
     console.error(`Pipeline error for project ${projectId}:`, err);
+    // Reset any in-flight task statuses so the frontend doesn't think
+    // the pipeline is still running after a crash.
+    await db
+      .update(tasks)
+      .set({ status: "ready" })
+      .where(
+        and(
+          eq(tasks.projectId, projectId),
+          inArray(tasks.status, [
+            "executing",
+            "decomposing",
+            "qa_check",
+            "editing",
+          ]),
+        ),
+      );
     await db
       .update(projects)
       .set({ status: "paused" })
@@ -103,6 +120,23 @@ export async function DELETE(
     pipeline.abort();
     activePipelines.delete(projectId);
   }
+
+  // Reset any in-flight task statuses back to "ready" so the frontend
+  // doesn't think the pipeline is still running based on task states.
+  await db
+    .update(tasks)
+    .set({ status: "ready" })
+    .where(
+      and(
+        eq(tasks.projectId, projectId),
+        inArray(tasks.status, [
+          "executing",
+          "decomposing",
+          "qa_check",
+          "editing",
+        ]),
+      ),
+    );
 
   await db
     .update(projects)

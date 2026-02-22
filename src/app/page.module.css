@@ -228,3 +228,55 @@
   padding: 3rem;
   font-size: 0.95rem;
 }
+
+/* ── Project card progress bar ── */
+.projectProgress {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-top: 0.35rem;
+}
+
+.projectProgressBar {
+  flex: 1;
+  height: 4px;
+  max-width: 120px;
+  background: var(--bg-input);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.projectProgressFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.projectProgressLabel {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  white-space: nowrap;
+}
+
+/* ── Card action buttons (Open / Download) ── */
+.cardBtn {
+  background: transparent;
+  color: var(--text-muted);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  font-size: 0.75rem;
+  font-weight: 500;
+  border: 1px solid var(--border);
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+  text-decoration: none;
+  white-space: nowrap;
+  cursor: pointer;
+}
+
+.cardBtn:hover {
+  color: var(--accent);
+  border-color: var(--accent);
+}

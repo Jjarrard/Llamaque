@@ -44,6 +44,37 @@ export async function PATCH(
     return NextResponse.json({ error: "Task not found" }, { status: 404 });
   }
 
+  // Edit description — allowed on non-running tasks
+  if (body.action === "edit_description") {
+    if (!body.description) {
+      return NextResponse.json(
+        { error: "description required" },
+        { status: 400 },
+      );
+    }
+    const editableStatuses = [
+      "awaiting_approval",
+      "pending",
+      "ready",
+      "stuck",
+      "done",
+    ];
+    if (!editableStatuses.includes(task.status)) {
+      return NextResponse.json(
+        { error: "Cannot edit task while it is being processed" },
+        { status: 400 },
+      );
+    }
+    await db
+      .update(tasks)
+      .set({ description: body.description })
+      .where(eq(tasks.id, taskId));
+    const updated = await db.query.tasks.findFirst({
+      where: eq(tasks.id, taskId),
+    });
+    return NextResponse.json(updated);
+  }
+
   // Approval actions work on awaiting_approval tasks
   if (body.action === "approve") {
     if (task.status !== "awaiting_approval") {

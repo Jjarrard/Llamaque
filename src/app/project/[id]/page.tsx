@@ -28,6 +28,7 @@ type Project = {
   description: string;
   status: string;
   primaryModel: string;
+  completedStages: string;
 };
 
 type LogEntry = {
@@ -91,17 +92,29 @@ function deriveCurrentStatus(
   label: string;
   phase: string;
   color: "muted" | "accent" | "success" | "warning" | "danger";
+  progressPct: number;
 } {
+  const totalTasks = taskList.length;
+  const doneTasks = taskList.filter((t) => t.status === "done").length;
+  const progressPct =
+    totalTasks > 0 ? Math.round((doneTasks / totalTasks) * 100) : 0;
+
   if (projectStatus === "done") {
     return {
       label: "Complete — all tasks done",
       phase: "done",
       color: "success",
+      progressPct: 100,
     };
   }
 
   if (!running && taskList.length === 0) {
-    return { label: "Ready to start", phase: "idle", color: "muted" };
+    return {
+      label: "Ready to start",
+      phase: "idle",
+      color: "muted",
+      progressPct: 0,
+    };
   }
 
   const hasAwaiting = taskList.some((t) => t.status === "awaiting_approval");
@@ -110,14 +123,13 @@ function deriveCurrentStatus(
   const qaTasks = taskList.filter((t) => t.status === "qa_check");
   const editingTasks = taskList.filter((t) => t.status === "editing");
   const decomposingTasks = taskList.filter((t) => t.status === "decomposing");
-  const doneTasks = taskList.filter((t) => t.status === "done");
-  const totalTasks = taskList.length;
 
   if (stuckTasks.length > 0 && !running) {
     return {
       label: `${stuckTasks.length} task${stuckTasks.length > 1 ? "s" : ""} stuck — needs attention`,
       phase: "stuck",
       color: "danger",
+      progressPct,
     };
   }
 
@@ -126,14 +138,16 @@ function deriveCurrentStatus(
       label: "Awaiting approval on epics",
       phase: "approval",
       color: "warning",
+      progressPct,
     };
   }
 
   if (!running && totalTasks > 0) {
     return {
-      label: `Paused — ${doneTasks.length}/${totalTasks} tasks done`,
+      label: `Paused — ${doneTasks}/${totalTasks} tasks done`,
       phase: "paused",
       color: "muted",
+      progressPct,
     };
   }
 
@@ -143,12 +157,18 @@ function deriveCurrentStatus(
       label: "Decomposing — breaking down into tasks…",
       phase: "decompose",
       color: "accent",
+      progressPct,
     };
   }
 
   if (executingTasks.length > 0) {
     const name = executingTasks[0].description.slice(0, 50);
-    return { label: `Executing — ${name}…`, phase: "execute", color: "accent" };
+    return {
+      label: `Executing — ${name}…`,
+      phase: "execute",
+      color: "accent",
+      progressPct,
+    };
   }
 
   if (qaTasks.length > 0) {
@@ -156,6 +176,7 @@ function deriveCurrentStatus(
       label: `QA checking — reviewing output…`,
       phase: "qa",
       color: "accent",
+      progressPct,
     };
   }
 
@@ -164,22 +185,75 @@ function deriveCurrentStatus(
       label: `Editing — fixing QA issues…`,
       phase: "edit",
       color: "accent",
+      progressPct,
     };
   }
 
   if (running) {
     return {
-      label: `Running — ${doneTasks.length}/${totalTasks} tasks done`,
+      label: `Running — ${doneTasks}/${totalTasks} tasks done`,
       phase: "running",
       color: "accent",
+      progressPct,
     };
   }
 
   return {
-    label: `${doneTasks.length}/${totalTasks} tasks done`,
+    label: `${doneTasks}/${totalTasks} tasks done`,
     phase: "idle",
     color: "muted",
+    progressPct,
   };
+}
+
+// ── Stage Pipeline Tracker ──
+
+type StageKey = "decompose" | "breakdown" | "execute" | "qa";
+type StageState = "pending" | "active" | "done" | "approval";
+
+const PIPELINE_STAGES: { key: StageKey; label: string; runStage: string }[] = [
+  { key: "decompose", label: "Decompose", runStage: "decompose" },
+  { key: "breakdown", label: "Breakdown", runStage: "breakdown" },
+  { key: "execute", label: "Execute", runStage: "execute" },
+  { key: "qa", label: "QA", runStage: "qa" },
+];
+
+function deriveStageStates(
+  taskList: Task[],
+  completedStages: string[],
+  running: boolean,
+): Record<StageKey, StageState> {
+  const states: Record<StageKey, StageState> = {
+    decompose: "pending",
+    breakdown: "pending",
+    execute: "pending",
+    qa: "pending",
+  };
+
+  // First pass — mark completed stages
+  for (const s of PIPELINE_STAGES) {
+    if (completedStages.includes(s.key)) {
+      states[s.key] = "done";
+    }
+  }
+
+  // If running, mark the first non-done stage as active
+  if (running) {
+    for (const s of PIPELINE_STAGES) {
+      if (states[s.key] !== "done") {
+        states[s.key] = "active";
+        break;
+      }
+    }
+  }
+
+  // Special case: if decompose is done but epics need approval, mark breakdown as "approval"
+  const hasAwaiting = taskList.some((t) => t.status === "awaiting_approval");
+  if (hasAwaiting && states.breakdown !== "done" && !running) {
+    states.breakdown = "approval";
+  }
+
+  return states;
 }
 
 /** Build a tree from flat task list */
@@ -203,12 +277,18 @@ export default function ProjectPage() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [expandedLogs, setExpandedLogs] = useState<
     Record<number, LogDetail | null>
   >({});
   const [openAccordions, setOpenAccordions] = useState<Set<number>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [resetStage, setResetStage] = useState<string | null>(null);
+  const [logFilter, setLogFilter] = useState<string | null>(null);
+  const [editingTask, setEditingTask] = useState<number | null>(null);
+  const [editingDescription, setEditingDescription] = useState("");
+  const [showPreview, setShowPreview] = useState(false);
+  const [previewKey, setPreviewKey] = useState(0);
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -251,7 +331,19 @@ export default function ProjectPage() {
       const data = await res.json();
       setProject(data.project);
       setTaskList(data.tasks);
-      setRunning(data.project.status === "running");
+      // Derive running from project status OR active task statuses.
+      // This handles the race where the pipeline hasn't set status=running
+      // in the DB yet but tasks are already executing.
+      const activeStatuses = [
+        "executing",
+        "decomposing",
+        "qa_check",
+        "editing",
+      ];
+      const hasActiveTasks = data.tasks.some((t: Task) =>
+        activeStatuses.includes(t.status),
+      );
+      setRunning(data.project.status === "running" || hasActiveTasks);
     }
   }, [projectId]);
 
@@ -259,10 +351,39 @@ export default function ProjectPage() {
     fetchProject();
   }, [fetchProject]);
 
+  // Fetch available models from Ollama
+  useEffect(() => {
+    fetch("/api/models")
+      .then((res) => (res.ok ? res.json() : []))
+      .then((models: string[]) => setAvailableModels(models))
+      .catch(() => {});
+  }, []);
+
+  const handleModelChange = async (newModel: string) => {
+    if (!project || newModel === project.primaryModel) return;
+    const res = await fetch(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set_model", model: newModel }),
+    });
+    if (res.ok) {
+      setProject({ ...project, primaryModel: newModel });
+    }
+  };
+
   // SSE for live logs + fallback HTTP polling
   useEffect(() => {
     let sseAlive = true;
     let lastSeenLogId = 0;
+    let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+    // Debounced project refresh — coalesces rapid SSE messages into one fetch
+    const scheduleRefresh = () => {
+      if (refreshTimer) clearTimeout(refreshTimer);
+      refreshTimer = setTimeout(() => {
+        fetchProject();
+      }, 500);
+    };
 
     // Track highest log ID we've seen
     const addEntries = (entries: LogEntry[]) => {
@@ -285,6 +406,8 @@ export default function ProjectPage() {
       try {
         const entry: LogEntry = JSON.parse(event.data);
         addEntries([entry]);
+        // Refresh task data on every log (debounced)
+        scheduleRefresh();
       } catch {
         // Ignore parse errors
       }
@@ -304,6 +427,7 @@ export default function ProjectPage() {
           const data = await res.json();
           if (data.logs && data.logs.length > 0) {
             addEntries(data.logs);
+            scheduleRefresh();
           }
         }
       } catch {
@@ -316,16 +440,46 @@ export default function ProjectPage() {
     return () => {
       es.close();
       clearInterval(pollInterval);
+      if (refreshTimer) clearTimeout(refreshTimer);
     };
-  }, [projectId]);
+  }, [projectId, fetchProject]);
 
   // NO auto-scroll — user controls their own scroll position
 
-  // Poll task status while running
+  // Auto-scroll log panel when new entries arrive
+  const userScrolledUpRef = useRef(false);
+  const logListRef = useRef<HTMLDivElement>(null);
+
+  // Detect if user has scrolled up (so we don't fight them)
+  const handleLogScroll = useCallback(() => {
+    const el = logListRef.current;
+    if (!el) return;
+    // If user is within 80px of the bottom, consider them "following"
+    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
+    userScrolledUpRef.current = !atBottom;
+  }, []);
+
+  // Scroll to bottom when new log entries arrive (unless user scrolled up)
   useEffect(() => {
-    if (!running) return;
-    const interval = setInterval(fetchProject, 5000);
-    return () => clearInterval(interval);
+    const el = logListRef.current;
+    if (!userScrolledUpRef.current && el) {
+      el.scrollTop = el.scrollHeight;
+    }
+  }, [logEntries, logFilter]);
+
+  // Poll task status while running — use a faster 2s interval
+  // and do a final fetch when running transitions to false
+  const prevRunningRef = useRef(false);
+  useEffect(() => {
+    if (running) {
+      prevRunningRef.current = true;
+      const interval = setInterval(fetchProject, 2000);
+      return () => clearInterval(interval);
+    } else if (prevRunningRef.current) {
+      // Pipeline just stopped — do a final fetch to pick up latest state
+      prevRunningRef.current = false;
+      fetchProject();
+    }
   }, [running, fetchProject]);
 
   const handleRun = async (stage: string = "all", breakdownDepth?: number) => {
@@ -339,7 +493,9 @@ export default function ProjectPage() {
     });
     if (res.ok) {
       setRunning(true);
-      fetchProject();
+      // Don't call fetchProject() immediately — the 2s polling starts
+      // now that running=true. Calling it here races with the pipeline
+      // setting status to "running" in the DB and can revert running=false.
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start pipeline");
@@ -413,19 +569,69 @@ export default function ProjectPage() {
     }
   };
 
+  const handleEditTask = async (taskId: number) => {
+    if (!editingDescription.trim()) return;
+    await fetch(`/api/tasks/${taskId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        action: "edit_description",
+        description: editingDescription.trim(),
+      }),
+    });
+    setEditingTask(null);
+    setEditingDescription("");
+    fetchProject();
+  };
+
+  const startEditTask = (task: Task) => {
+    setEditingTask(task.id);
+    setEditingDescription(task.description);
+  };
+
+  const handleRunQA = async () => {
+    setError(null);
+    const res = await fetch(`/api/projects/${projectId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ stage: "qa" }),
+    });
+    if (res.ok) {
+      setRunning(true);
+      // Same as handleRun — don't race fetchProject against pipeline startup
+    } else {
+      const data = await res.json();
+      setError(data.error || "Failed to start QA pass");
+    }
+  };
+
   // Compute what's available for stage buttons
   const hasAwaitingApproval = taskList.some(
     (t) => t.status === "awaiting_approval",
   );
-  const hasPendingAtDepth = (d: number) =>
-    taskList.some((t) => t.depth === d && t.status === "pending");
-  const hasReadyTasks = taskList.some((t) =>
-    ["ready", "executing", "qa_check"].includes(t.status),
+  // Leaf tasks (depth >= 2) that have been executed to completion
+  const hasExecutedLeafTasks = taskList.some(
+    (t) => t.depth >= 2 && t.status === "done",
+  );
+  // Any tasks that still need processing (pending breakdown or ready for execution)
+  const hasWorkRemaining = taskList.some((t) =>
+    ["pending", "ready"].includes(t.status),
   );
 
   const currentStatus = project
     ? deriveCurrentStatus(taskList, project.status, running)
-    : { label: "Loading…", phase: "idle", color: "muted" as const };
+    : {
+        label: "Loading…",
+        phase: "idle",
+        color: "muted" as const,
+        progressPct: 0,
+      };
+
+  const completedStages: string[] = project
+    ? JSON.parse(project.completedStages || "[]")
+    : [];
+
+  const stageStates = deriveStageStates(taskList, completedStages, running);
 
   const statusColorClass: Record<string, string> = {
     muted: styles.statusBarMuted,
@@ -436,6 +642,17 @@ export default function ProjectPage() {
   };
 
   const tree = buildTree(taskList);
+
+  // Check if output exists (leaf tasks executed means output files have content)
+  const hasOutputFiles = hasExecutedLeafTasks;
+
+  // Filtered log entries
+  const filteredLogs = logFilter
+    ? logEntries.filter((e) => e.agent === logFilter)
+    : logEntries;
+
+  // Unique agent names for filter
+  const logAgents = Array.from(new Set(logEntries.map((e) => e.agent)));
 
   /** Render a task and its children recursively */
   const renderTask = (task: Task) => {
@@ -448,53 +665,96 @@ export default function ProjectPage() {
 
     return (
       <li key={task.id} className={styles.taskItem}>
-        <div className={styles.taskRow}>
-          <span className={`${styles.depthLabel} ${depthLabelCls}`}>
-            {depthLabel}
-          </span>
-          <span
-            className={`${styles.taskStatus} ${statusDotClass[task.status] || styles.statusPending}`}
-          />
-          <span
-            className={`${styles.taskDesc} ${task.status === "stuck" ? styles.taskStuck : ""}`}
-            title={task.description}
-          >
-            {isWorkParent ? (
-              <button
-                className={styles.accordionToggle}
-                onClick={() => toggleAccordion(task.id)}
-              >
-                <span className={styles.accordionIcon}>
-                  {isOpen ? "▾" : "▸"}
-                </span>
-                {task.description}
-              </button>
-            ) : (
-              task.description
-            )}
-          </span>
-          <span className={styles.taskStatusLabel}>
-            {task.status === "awaiting_approval"
-              ? "awaiting"
-              : task.status.replace("_", " ")}
-          </span>
-          {task.status === "awaiting_approval" && (
-            <span className={styles.approvalActions}>
-              <button
-                className={styles.approveBtn}
-                onClick={() => handleApprove(task.id)}
-              >
-                ✓
-              </button>
-              <button
-                className={styles.rejectBtn}
-                onClick={() => handleReject(task.id)}
-              >
-                ✕
-              </button>
+        {editingTask === task.id ? (
+          <div className={styles.taskEditRow}>
+            <input
+              className={styles.taskEditInput}
+              value={editingDescription}
+              onChange={(e) => setEditingDescription(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") handleEditTask(task.id);
+                if (e.key === "Escape") setEditingTask(null);
+              }}
+              autoFocus
+            />
+            <button
+              className={styles.approveBtn}
+              onClick={() => handleEditTask(task.id)}
+            >
+              ✓
+            </button>
+            <button
+              className={styles.rejectBtn}
+              onClick={() => setEditingTask(null)}
+            >
+              ✕
+            </button>
+          </div>
+        ) : (
+          <div className={styles.taskRow}>
+            <span className={`${styles.depthLabel} ${depthLabelCls}`}>
+              {depthLabel}
             </span>
-          )}
-        </div>
+            <span
+              className={`${styles.taskStatus} ${statusDotClass[task.status] || styles.statusPending}`}
+            />
+            <span
+              className={`${styles.taskDesc} ${task.status === "stuck" ? styles.taskStuck : ""}`}
+              title={task.description}
+            >
+              {isWorkParent ? (
+                <button
+                  className={styles.accordionToggle}
+                  onClick={() => toggleAccordion(task.id)}
+                >
+                  <span className={styles.accordionIcon}>
+                    {isOpen ? "▾" : "▸"}
+                  </span>
+                  {task.description}
+                </button>
+              ) : (
+                task.description
+              )}
+            </span>
+            <span className={styles.taskStatusLabel}>
+              {task.status === "awaiting_approval"
+                ? "awaiting"
+                : task.status.replace("_", " ")}
+            </span>
+            {!running &&
+              [
+                "awaiting_approval",
+                "pending",
+                "ready",
+                "stuck",
+                "done",
+              ].includes(task.status) && (
+                <button
+                  className={styles.taskEditBtn}
+                  onClick={() => startEditTask(task)}
+                  title="Edit description"
+                >
+                  ✎
+                </button>
+              )}
+            {task.status === "awaiting_approval" && (
+              <span className={styles.approvalActions}>
+                <button
+                  className={styles.approveBtn}
+                  onClick={() => handleApprove(task.id)}
+                >
+                  ✓
+                </button>
+                <button
+                  className={styles.rejectBtn}
+                  onClick={() => handleReject(task.id)}
+                >
+                  ✕
+                </button>
+              </span>
+            )}
+          </div>
+        )}
         {task.status === "stuck" && task.stuckReason && (
           <div className={styles.stuckInfo}>
             <span className={styles.stuckReason}>{task.stuckReason}</span>
@@ -559,52 +819,208 @@ export default function ProjectPage() {
           </h1>
         </div>
         <div className={styles.topBarActions}>
+          {availableModels.length > 0 && (
+            <select
+              className={styles.modelSelect}
+              value={project.primaryModel}
+              onChange={(e) => handleModelChange(e.target.value)}
+              disabled={running}
+              title="Change model"
+            >
+              {availableModels.map((m) => (
+                <option key={m} value={m}>
+                  {m}
+                </option>
+              ))}
+              {!availableModels.includes(project.primaryModel) && (
+                <option value={project.primaryModel}>
+                  {project.primaryModel}
+                </option>
+              )}
+            </select>
+          )}
           <button
             className={styles.deleteBtn}
             onClick={() => setShowDeleteConfirm(true)}
             title="Delete project"
           >
-            🗑 Delete
+            Delete
           </button>
         </div>
       </div>
 
-      {/* Status Bar */}
+      {/* ── Action Bar: status + stage tracker + actions ── */}
       <div
-        className={`${styles.statusBar} ${statusColorClass[currentStatus.color] || styles.statusBarMuted}`}
+        className={`${styles.actionBar} ${statusColorClass[currentStatus.color] || styles.statusBarMuted}`}
       >
-        <span className={styles.statusBarText}>
+        {/* Left: status label */}
+        <div className={styles.actionBarStatus}>
           {currentStatus.color === "accent" && (
             <span className={styles.statusBarPulse}>●</span>
           )}
-          {currentStatus.label}
-        </span>
-        {!running && taskList.length > 0 && (
-          <div className={styles.statusBarActions}>
-            <button
-              className={styles.rerunBtn}
-              onClick={() => setResetStage("execute")}
-              title="Re-run execution"
-            >
-              ↻ Re-run Execute
+          <span className={styles.actionBarLabel}>{currentStatus.label}</span>
+        </div>
+
+        {/* Right: utility + stop/run-all */}
+        <div className={styles.actionBarButtons}>
+          {hasOutputFiles && (
+            <>
+              <button
+                className={styles.actionUtility}
+                onClick={() => {
+                  setPreviewKey((k) => k + 1);
+                  setShowPreview((p) => !p);
+                }}
+                title={showPreview ? "Hide preview" : "Show preview"}
+              >
+                {showPreview ? "✕ Preview" : "Preview"}
+              </button>
+              <a
+                className={styles.actionUtility}
+                href={`/api/projects/${projectId}/output?file=index.html`}
+                target="_blank"
+                rel="noopener noreferrer"
+                title="Open in new tab"
+              >
+                ↗ Open
+              </a>
+            </>
+          )}
+          {running ? (
+            <button className={styles.stopBtn} onClick={handleStop}>
+              ■ Stop
             </button>
-            <button
-              className={styles.rerunBtn}
-              onClick={() => setResetStage("breakdown")}
-              title="Re-run breakdown"
-            >
-              ↻ Re-run Breakdown
-            </button>
-            <button
-              className={styles.rerunBtn}
-              onClick={() => setResetStage("decompose")}
-              title="Start over from scratch"
-            >
-              ↻ Start Over
-            </button>
-          </div>
-        )}
+          ) : (
+            <>
+              {taskList.length > 0 &&
+                !hasAwaitingApproval &&
+                hasWorkRemaining &&
+                project?.status !== "done" && (
+                  <button
+                    className={styles.actionRunAll}
+                    onClick={() => handleRun("all")}
+                  >
+                    ▶▶ Run All
+                  </button>
+                )}
+            </>
+          )}
+        </div>
       </div>
+
+      {/* ── Stage Pipeline Tracker ── */}
+      <div className={styles.stageTracker}>
+        {PIPELINE_STAGES.map((stage, i) => {
+          const state = stageStates[stage.key];
+          const isFirst = i === 0;
+          // Can run this stage if upstream is done and not currently running
+          const upstreamDone =
+            isFirst || stageStates[PIPELINE_STAGES[i - 1].key] === "done";
+          const canRun = !running && state === "pending" && upstreamDone;
+          const canRetry = !running && state === "done";
+          const isApproval = state === "approval";
+
+          return (
+            <div key={stage.key} className={styles.stageItem}>
+              {i > 0 && (
+                <div
+                  className={`${styles.stageConnector} ${
+                    state === "done" || state === "active"
+                      ? styles.stageConnectorActive
+                      : ""
+                  }`}
+                />
+              )}
+              <div
+                className={`${styles.stageChip} ${
+                  state === "done"
+                    ? styles.stageChipDone
+                    : state === "active"
+                      ? styles.stageChipActive
+                      : state === "approval"
+                        ? styles.stageChipApproval
+                        : styles.stageChipPending
+                }`}
+              >
+                <span className={styles.stageIcon}>
+                  {state === "done" && "✓"}
+                  {state === "active" && (
+                    <span className={styles.stageSpinner}>●</span>
+                  )}
+                  {state === "pending" && "○"}
+                  {state === "approval" && "⚠"}
+                </span>
+                <span className={styles.stageLabel}>{stage.label}</span>
+                {canRun && (
+                  <button
+                    className={styles.stageRunBtn}
+                    onClick={() => {
+                      if (stage.key === "qa") {
+                        handleRunQA();
+                      } else {
+                        handleRun(stage.runStage);
+                      }
+                    }}
+                    title={`Run ${stage.label}`}
+                  >
+                    ▶
+                  </button>
+                )}
+                {canRetry && (
+                  <button
+                    className={styles.stageRetryBtn}
+                    onClick={() => setResetStage(stage.runStage)}
+                    title={`Re-run ${stage.label}`}
+                  >
+                    ↻
+                  </button>
+                )}
+                {isApproval && (
+                  <button
+                    className={styles.stageApproveBtn}
+                    onClick={handleApproveAll}
+                    title="Approve all epics"
+                  >
+                    ✓ Approve
+                  </button>
+                )}
+              </div>
+            </div>
+          );
+        })}
+      </div>
+
+      {/* ── Progress Bar ── */}
+      {taskList.length > 0 && (
+        <div className={styles.progressBarContainer}>
+          <div
+            className={styles.progressBarFill}
+            style={{
+              width: `${currentStatus.progressPct}%`,
+              background:
+                currentStatus.progressPct >= 100
+                  ? "var(--success)"
+                  : "var(--accent)",
+            }}
+          />
+          <span className={styles.progressBarLabel}>
+            {currentStatus.progressPct}%
+          </span>
+        </div>
+      )}
+
+      {/* ── Preview Iframe ── */}
+      {showPreview && hasOutputFiles && (
+        <div className={styles.previewContainer}>
+          <iframe
+            key={previewKey}
+            className={styles.previewIframe}
+            src={`/api/projects/${projectId}/output?file=index.html`}
+            title="Project Preview"
+            sandbox="allow-scripts allow-same-origin"
+          />
+        </div>
+      )}
 
       {/* Confirm reset dialog */}
       {resetStage && (
@@ -658,65 +1074,6 @@ export default function ProjectPage() {
         </div>
       )}
 
-      <div className={styles.controls}>
-        {!running ? (
-          <>
-            {taskList.length === 0 && (
-              <button
-                className={styles.runBtn}
-                onClick={() => handleRun("decompose")}
-              >
-                1. Decompose
-              </button>
-            )}
-            {hasAwaitingApproval && (
-              <button
-                className={styles.approveAllBtn}
-                onClick={handleApproveAll}
-              >
-                Approve All Epics
-              </button>
-            )}
-            {hasPendingAtDepth(1) && (
-              <button
-                className={styles.stageBtn}
-                onClick={() => handleRun("breakdown", 1)}
-              >
-                Epics → Features
-              </button>
-            )}
-            {hasPendingAtDepth(2) && (
-              <button
-                className={styles.stageBtn}
-                onClick={() => handleRun("breakdown", 2)}
-              >
-                Features → Tasks
-              </button>
-            )}
-            {hasReadyTasks && (
-              <button
-                className={styles.stageBtn}
-                onClick={() => handleRun("execute")}
-              >
-                Execute Tasks
-              </button>
-            )}
-            {taskList.length > 0 && !hasAwaitingApproval && (
-              <button
-                className={styles.runBtn}
-                onClick={() => handleRun("all")}
-              >
-                Run All
-              </button>
-            )}
-          </>
-        ) : (
-          <button className={styles.stopBtn} onClick={handleStop}>
-            Stop
-          </button>
-        )}
-      </div>
-
       {error && <div className={styles.error}>{error}</div>}
 
       <div className={styles.layout}>
@@ -739,9 +1096,36 @@ export default function ProjectPage() {
 
         {/* Log Panel */}
         <div className={styles.logPanel}>
-          <h2 className={styles.logPanelTitle}>Live Log</h2>
-          <div className={styles.logList}>
-            {logEntries.map((entry) => (
+          <div className={styles.logPanelHeader}>
+            <h2 className={styles.logPanelTitle}>Live Log</h2>
+            {logAgents.length > 1 && (
+              <div className={styles.logFilters}>
+                <button
+                  className={`${styles.logFilterBtn} ${!logFilter ? styles.logFilterActive : ""}`}
+                  onClick={() => setLogFilter(null)}
+                >
+                  All
+                </button>
+                {logAgents.map((agent) => (
+                  <button
+                    key={agent}
+                    className={`${styles.logFilterBtn} ${logFilter === agent ? styles.logFilterActive : ""} ${agentClass[agent] || ""}`}
+                    onClick={() =>
+                      setLogFilter(logFilter === agent ? null : agent)
+                    }
+                  >
+                    {agent}
+                  </button>
+                ))}
+              </div>
+            )}
+          </div>
+          <div
+            className={styles.logList}
+            ref={logListRef}
+            onScroll={handleLogScroll}
+          >
+            {filteredLogs.map((entry) => (
               <div key={entry.id} className={styles.logEntry}>
                 <div
                   className={`${styles.logRow} ${entry.hasRaw ? styles.logClickable : ""}`}

@@ -17,6 +17,11 @@ const globalForDb = globalThis as unknown as { _sqlite?: Database.Database };
 if (!globalForDb._sqlite) {
   globalForDb._sqlite = new Database(dbPath);
   globalForDb._sqlite.pragma("journal_mode = WAL");
+
+  // Startup sweep: reset any projects stuck in "running" state from a previous crash
+  globalForDb._sqlite.exec(
+    `UPDATE projects SET status = 'paused' WHERE status = 'running'`,
+  );
 }
 
 export const db = drizzle(globalForDb._sqlite, { schema });
