@@ -14,6 +14,7 @@ const VALID_STAGES: PipelineStage[] = [
   "breakdown",
   "execute",
   "qa",
+  "feedback",
 ];
 
 /**
@@ -29,6 +30,7 @@ export async function POST(
 
   let stage: PipelineStage = "all";
   let breakdownDepth: number | undefined;
+  let feedback: string | undefined;
   try {
     const body = await request.json();
     if (body.stage && VALID_STAGES.includes(body.stage)) {
@@ -36,6 +38,9 @@ export async function POST(
     }
     if (typeof body.breakdownDepth === "number") {
       breakdownDepth = body.breakdownDepth;
+    }
+    if (typeof body.feedback === "string" && body.feedback.trim()) {
+      feedback = body.feedback.trim();
     }
   } catch {
     // No body or invalid JSON — use default
@@ -77,7 +82,7 @@ export async function POST(
   activePipelines.set(projectId, pipeline);
 
   // Fire and forget
-  pipeline.run(stage, breakdownDepth).catch(async (err) => {
+  pipeline.run(stage, breakdownDepth, feedback).catch(async (err) => {
     console.error(`Pipeline error for project ${projectId}:`, err);
     // Reset any in-flight task statuses so the frontend doesn't think
     // the pipeline is still running after a crash.

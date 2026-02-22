@@ -16,7 +16,8 @@ export type AgentRole =
   | "developer"
   | "qa"
   | "summariser"
-  | "editor";
+  | "editor"
+  | "feedback";
 
 interface AgentConfig {
   temperature: number;
@@ -32,6 +33,7 @@ const AGENT_CONFIGS: Record<AgentRole, AgentConfig> = {
   qa: { temperature: 0, numPredict: 100 },
   summariser: { temperature: 0, numPredict: 100 },
   editor: { temperature: 0, numPredict: 300 },
+  feedback: { temperature: 0, numPredict: 400 },
 };
 
 /** Context window limit — prompt + response must fit within this */

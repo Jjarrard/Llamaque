@@ -101,7 +101,22 @@ function initApp() {
 
     section.addEventListener('drop', e => {
       const id = e.dataTransfer.getData('text/plain');
-      moveItem(parseInt(id), section.id);
+      let status;
+      switch (section.id) {
+        case "inProgress":
+          status = "inProgress";
+          break;
+        case "qa":
+          status = "qa";
+          break;
+        case "done":
+          status = "done";
+          break;
+        default:
+          status = "backlog";
+          break;
+      }
+      moveItem(parseInt(id), status);
     });
   });
 }

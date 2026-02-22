@@ -208,7 +208,7 @@ function deriveCurrentStatus(
 
 // ── Stage Pipeline Tracker ──
 
-type StageKey = "decompose" | "breakdown" | "execute" | "qa";
+type StageKey = "decompose" | "breakdown" | "execute" | "qa" | "feedback";
 type StageState = "pending" | "active" | "done" | "approval";
 
 const PIPELINE_STAGES: { key: StageKey; label: string; runStage: string }[] = [
@@ -216,6 +216,7 @@ const PIPELINE_STAGES: { key: StageKey; label: string; runStage: string }[] = [
   { key: "breakdown", label: "Breakdown", runStage: "breakdown" },
   { key: "execute", label: "Execute", runStage: "execute" },
   { key: "qa", label: "QA", runStage: "qa" },
+  { key: "feedback", label: "Feedback", runStage: "feedback" },
 ];
 
 function deriveStageStates(
@@ -228,6 +229,7 @@ function deriveStageStates(
     breakdown: "pending",
     execute: "pending",
     qa: "pending",
+    feedback: "pending",
   };
 
   // First pass — mark completed stages
@@ -289,6 +291,8 @@ export default function ProjectPage() {
   const [editingDescription, setEditingDescription] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
+  const [feedbackText, setFeedbackText] = useState("");
+  const [showFeedbackInput, setShowFeedbackInput] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
 
@@ -602,6 +606,27 @@ export default function ProjectPage() {
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start QA pass");
+    }
+  };
+
+  const handleSubmitFeedback = async () => {
+    if (!feedbackText.trim() || running) return;
+    setError(null);
+    const res = await fetch(`/api/projects/${projectId}/run`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        stage: "feedback",
+        feedback: feedbackText.trim(),
+      }),
+    });
+    if (res.ok) {
+      setRunning(true);
+      setFeedbackText("");
+      setShowFeedbackInput(false);
+    } else {
+      const data = await res.json();
+      setError(data.error || "Failed to start feedback pass");
     }
   };
 
@@ -955,24 +980,40 @@ export default function ProjectPage() {
                   <button
                     className={styles.stageRunBtn}
                     onClick={() => {
-                      if (stage.key === "qa") {
+                      if (stage.key === "feedback") {
+                        setShowFeedbackInput(true);
+                      } else if (stage.key === "qa") {
                         handleRunQA();
                       } else {
                         handleRun(stage.runStage);
                       }
                     }}
-                    title={`Run ${stage.label}`}
+                    title={
+                      stage.key === "feedback"
+                        ? "Add Feedback"
+                        : `Run ${stage.label}`
+                    }
                   >
-                    ▶
+                    {stage.key === "feedback" ? "✎" : "▶"}
                   </button>
                 )}
                 {canRetry && (
                   <button
                     className={styles.stageRetryBtn}
-                    onClick={() => setResetStage(stage.runStage)}
-                    title={`Re-run ${stage.label}`}
+                    onClick={() => {
+                      if (stage.key === "feedback") {
+                        setShowFeedbackInput(true);
+                      } else {
+                        setResetStage(stage.runStage);
+                      }
+                    }}
+                    title={
+                      stage.key === "feedback"
+                        ? "Add More Feedback"
+                        : `Re-run ${stage.label}`
+                    }
                   >
-                    ↻
+                    {stage.key === "feedback" ? "✎" : "↻"}
                   </button>
                 )}
                 {isApproval && (
@@ -989,6 +1030,45 @@ export default function ProjectPage() {
           );
         })}
       </div>
+
+      {/* ── Feedback Input Panel ── */}
+      {showFeedbackInput && !running && (
+        <div className={styles.feedbackPanel}>
+          <div className={styles.feedbackHeader}>
+            <span className={styles.feedbackTitle}>✎ Feedback</span>
+            <button
+              className={styles.feedbackCloseBtn}
+              onClick={() => setShowFeedbackInput(false)}
+              title="Close"
+            >
+              ✕
+            </button>
+          </div>
+          <textarea
+            className={styles.feedbackTextarea}
+            value={feedbackText}
+            onChange={(e) => setFeedbackText(e.target.value)}
+            placeholder="Describe what you'd like to change, fix, or improve..."
+            rows={4}
+            autoFocus
+            onKeyDown={(e) => {
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+                handleSubmitFeedback();
+              }
+            }}
+          />
+          <div className={styles.feedbackActions}>
+            <span className={styles.feedbackHint}>⌘+Enter to submit</span>
+            <button
+              className={styles.feedbackSubmitBtn}
+              onClick={handleSubmitFeedback}
+              disabled={!feedbackText.trim()}
+            >
+              Submit Feedback
+            </button>
+          </div>
+        </div>
+      )}
 
       {/* ── Progress Bar ── */}
       {taskList.length > 0 && (

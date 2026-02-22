@@ -12,12 +12,13 @@ body {
   min-height: 100vh;
 }
 #app {
-  max-width: 640px;
+  max-width: 960px; /* Updated from 640px to 960px */
   margin: 2rem auto;
   padding: 2rem;
   background-color: #fff;
   border-radius: 12px;
   box-shadow: 0 2px 8px rgba(0,0,0,0.1);
+  text-align: center; /* Added for centering the input */
 }
 #appTitle {
   font-size: 1.8rem;
@@ -58,7 +59,7 @@ input[type="text"]:focus {
 }
 #kanbanBoard {
   display: grid;
-  grid-template-columns: repeat(4, 1fr);
+  grid-template-columns: repeat(4, minmax(150px, 1fr));
   gap: 2rem;
   margin-top: 2rem;
 }
@@ -118,7 +119,7 @@ button:focus, .delete-btn:focus, input[type="text"]:focus {
 }
 @media (max-width: 768px) {
   #kanbanBoard {
-    grid-template-columns: repeat(2, 1fr);
+    grid-template-columns: repeat(2, minmax(150px, 1fr));
   }
 }
 @media (max-width: 480px) {

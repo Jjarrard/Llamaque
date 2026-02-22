@@ -29,6 +29,7 @@ import {
   autoRepairOutput,
   validateCrossFileConsistency,
 } from "@/lib/validate";
+import { callOllama as callOllamaFn } from "@/lib/ollama";
 import { isVagueOrCircular, extractReferences } from "@/lib/protocol";
 import { applyOperations } from "@/lib/ops/executor";
 import { compileRequirementsToOperations } from "@/lib/ops/compiler";
@@ -65,7 +66,8 @@ export type PipelineStage =
   | "decompose"
   | "breakdown"
   | "execute"
-  | "qa";
+  | "qa"
+  | "feedback";
 
 export type PipelineEvent = {
   type: string;
@@ -265,7 +267,11 @@ export class Pipeline {
   //  MAIN ENTRY POINT
   // ─────────────────────────────────────────────
 
-  async run(stage: PipelineStage = "all", breakdownDepth?: number) {
+  async run(
+    stage: PipelineStage = "all",
+    breakdownDepth?: number,
+    feedback?: string,
+  ) {
     this.stage = stage;
     this.breakdownDepth = breakdownDepth ?? null;
     const project = await db.query.projects.findFirst({
@@ -290,7 +296,7 @@ export class Pipeline {
     // Clear the current stage and all downstream stages from completedStages
     // so the tracker shows them as pending/active again.
     // For "all" with existing tasks, decompose is already done — start from breakdown.
-    const STAGE_ORDER = ["decompose", "breakdown", "execute", "qa"];
+    const STAGE_ORDER = ["decompose", "breakdown", "execute", "qa", "feedback"];
     const currentStages: string[] = JSON.parse(project.completedStages || "[]");
     let effectiveStage: string;
     if (stage === "all") {
@@ -330,6 +336,29 @@ export class Pipeline {
         "SYS",
         "Project already decomposed. Use Breakdown or Execute.",
       );
+      await db
+        .update(projects)
+        .set({ status: "paused" })
+        .where(eq(projects.id, this.projectId));
+      this.emit("pipeline_done", { projectId: this.projectId });
+      return;
+    }
+
+    // Feedback pass: user-driven iterative improvement
+    if (stage === "feedback") {
+      if (!feedback || !feedback.trim()) {
+        await this.log("SYS", "No feedback provided.");
+        await db
+          .update(projects)
+          .set({ status: "paused" })
+          .where(eq(projects.id, this.projectId));
+        this.emit("pipeline_done", { projectId: this.projectId });
+        return;
+      }
+      await this.log("SYS", "Running feedback pass...");
+      await this.runFeedbackPass(feedback);
+      await this.markStageComplete("feedback");
+      // Always pause after feedback so user can add more
       await db
         .update(projects)
         .set({ status: "paused" })
@@ -2176,6 +2205,235 @@ export class Pipeline {
       "QA",
       `Iterative QA complete: ${previousFixes.length} issue(s) addressed in ${round} round(s)`,
     );
+  }
+
+  // ─────────────────────────────────────────────
+  //  FEEDBACK PASS — User-driven iterative loop
+  // ─────────────────────────────────────────────
+
+  /**
+   * Takes user feedback, breaks it into file-targeted fixes via LLM,
+   * applies each fix through the Developer agent, then runs a quick QA pass.
+   */
+  async runFeedbackPass(feedback: string) {
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) {
+      await this.log("FEEDBACK", "No output files found — nothing to modify.");
+      return;
+    }
+
+    const readFile = (name: string) => {
+      const fullPath = path.join(outDir, name);
+      if (!fs.existsSync(fullPath)) return "";
+      return fs.readFileSync(fullPath, "utf-8");
+    };
+
+    // Read current files
+    const currentFiles: { path: string; content: string }[] = [];
+    for (const file of TEMPLATE_FILES) {
+      const content = readFile(file);
+      if (content.trim().length > 0) {
+        currentFiles.push({ path: file, content });
+      }
+    }
+
+    if (currentFiles.length === 0) {
+      await this.log(
+        "FEEDBACK",
+        "All output files are empty — run Execute first.",
+      );
+      return;
+    }
+
+    await this.log(
+      "FEEDBACK",
+      `Processing feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
+    );
+
+    // Use LLM to break feedback into file-targeted changes
+    const fileList = currentFiles
+      .map((f) => `${f.path}:\n${this.truncateForPrompt(f.content, 80)}`)
+      .join("\n\n");
+
+    const analysisPrompt = `You are a code reviewer analyzing user feedback for a web project.
+
+PROJECT: ${this.projectName} — ${this.projectDescription}
+
+CURRENT FILES:
+${fileList}
+
+USER FEEDBACK:
+${feedback}
+
+Break this feedback into specific file changes. For each change, specify:
+- FILE: which file to modify (index.html, style.css, or script.js)
+- PROBLEM: what needs to change
+- FIX: specific description of how to fix it
+
+Format your response EXACTLY like this (one or more entries):
+
+CHANGE 1:
+FILE: <filename>
+PROBLEM: <what's wrong or needs changing>
+FIX: <specific fix description>
+
+CHANGE 2:
+FILE: <filename>
+PROBLEM: <what's wrong or needs changing>
+FIX: <specific fix description>
+
+Only include changes that are relevant to the feedback. Be specific and actionable.`;
+
+    const analysisResult = await this.callFeedbackAnalysis(analysisPrompt);
+
+    if (!analysisResult) {
+      await this.log(
+        "FEEDBACK",
+        "Failed to analyze feedback — LLM returned empty response.",
+      );
+      return;
+    }
+
+    await this.log(
+      "FEEDBACK",
+      `Analysis complete`,
+      undefined,
+      analysisPrompt,
+      analysisResult,
+    );
+
+    // Parse the changes
+    const changes: { file: string; problem: string; fix: string }[] = [];
+    const changeBlocks = analysisResult
+      .split(/CHANGE\s+\d+:/i)
+      .filter((b) => b.trim());
+
+    for (const block of changeBlocks) {
+      const fileMatch = block.match(/FILE:\s*(.+)/i);
+      const problemMatch = block.match(/PROBLEM:\s*(.+)/i);
+      const fixMatch = block.match(/FIX:\s*(.+)/i);
+
+      if (fileMatch && problemMatch && fixMatch) {
+        const resolvedFile = this.resolveTargetFile(fileMatch[1].trim());
+        if (resolvedFile) {
+          changes.push({
+            file: resolvedFile,
+            problem: problemMatch[1].trim(),
+            fix: fixMatch[1].trim(),
+          });
+        }
+      }
+    }
+
+    if (changes.length === 0) {
+      await this.log(
+        "FEEDBACK",
+        "Could not parse any actionable changes from feedback analysis.",
+      );
+      return;
+    }
+
+    await this.log("FEEDBACK", `Found ${changes.length} change(s) to apply.`);
+
+    // Apply each change through the Developer agent
+    let applied = 0;
+    for (const change of changes) {
+      if (this.aborted) break;
+
+      const existingContent = readFile(change.file);
+      if (!existingContent || existingContent.trim().length < 10) {
+        await this.log("FEEDBACK", `Skipping ${change.file} — file is empty.`);
+        continue;
+      }
+
+      await this.log(
+        "FEEDBACK",
+        `Applying: [${change.file}] ${change.problem}`,
+      );
+
+      const htmlContext = this.getHTMLContext(change.file);
+
+      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+      if (htmlContext && change.file !== "index.html") {
+        userMessage += `HTML file:\n${htmlContext}\n\n`;
+      }
+      userMessage += `Current ${change.file}:\n${existingContent}\n\n`;
+      userMessage += `User feedback requires this change:\nProblem: ${change.problem}\nFix: ${change.fix}\n\n`;
+      userMessage += `Apply ONLY this change. Keep everything else exactly the same. Rewrite the COMPLETE ${change.file} file.`;
+
+      userMessage = this.withCustomInstructions(userMessage);
+
+      const devResult = await runDeveloper(
+        this.model,
+        userMessage,
+        change.file,
+      );
+
+      if (devResult.block) {
+        const output = devResult.block.output;
+        const { repaired } = autoRepairOutput(output, change.file);
+        const validation = validateOutput(repaired, change.file);
+        if (validation.valid) {
+          await this.writeOutputFile(change.file, repaired);
+          await this.log(
+            "FEEDBACK",
+            `Applied fix to ${change.file} (${devResult.tokens} tokens)`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+          applied++;
+        } else {
+          await this.log(
+            "FEEDBACK",
+            `Fix for ${change.file} failed validation: ${validation.reason} — keeping original`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+        }
+      } else {
+        await this.log(
+          "FEEDBACK",
+          `Could not apply fix to ${change.file} — Developer parse failure`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+      }
+    }
+
+    await this.log(
+      "FEEDBACK",
+      `Applied ${applied}/${changes.length} change(s).`,
+    );
+
+    // Quick QA pass on the modified files
+    if (applied > 0 && !this.aborted) {
+      await this.log("FEEDBACK", "Running quick QA pass on changes...");
+      await this.runConsistencyCheck();
+      await this.log("FEEDBACK", "Feedback round complete.");
+    }
+  }
+
+  /** Call Ollama with the feedback agent role for feedback analysis */
+  private async callFeedbackAnalysis(
+    userMessage: string,
+  ): Promise<string | null> {
+    try {
+      const systemPrompt =
+        "You are a code reviewer that analyzes user feedback and breaks it into specific, actionable file changes. Always respond in the exact format requested.";
+      const result = await callOllamaFn(
+        this.model,
+        "feedback",
+        systemPrompt,
+        userMessage,
+      );
+      return result.text || null;
+    } catch (err) {
+      console.error("Feedback analysis failed:", err);
+      return null;
+    }
   }
 
   /** Map an LLM-returned filename to one of the 3 template files */

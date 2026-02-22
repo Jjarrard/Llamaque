@@ -72,7 +72,7 @@ export async function PATCH(
     const stage = body.stage as string;
 
     // Clear this stage and all downstream stages from completedStages
-    const STAGE_ORDER = ["decompose", "breakdown", "execute", "qa"];
+    const STAGE_ORDER = ["decompose", "breakdown", "execute", "qa", "feedback"];
     const project = await db.query.projects.findFirst({
       where: eq(projects.id, projectId),
     });
@@ -161,6 +161,13 @@ export async function PATCH(
       if (fs.existsSync(outputDir)) {
         fs.rmSync(outputDir, { recursive: true, force: true });
       }
+      await db
+        .update(projects)
+        .set({ status: "paused" })
+        .where(eq(projects.id, projectId));
+    } else if (stage === "qa" || stage === "feedback") {
+      // QA and Feedback resets just clear the stage marker (done above via STAGE_ORDER).
+      // No need to delete tasks or output files.
       await db
         .update(projects)
         .set({ status: "paused" })
