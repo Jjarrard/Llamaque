@@ -17,7 +17,9 @@ Rules:
 - Use describe/it blocks
 - Test that the component renders without crashing
 - Test that key UI elements exist (headings, buttons, inputs)
-- Test user interactions (click, type) if applicable
+- Test that inputs actually work: type into them and verify the value changes
+- Test that buttons trigger visible changes (new elements appear, text updates, counts change)
+- Test the main user flow end-to-end: fill form → submit → see result
 - Keep tests simple and practical — no mocking, no complex setup
 - 3-5 tests total. Each test checks ONE thing. Fewer good tests beats many bad ones.
 - Output ONLY code. No comments in code. No explanations.
@@ -58,7 +60,8 @@ export async function runTestWriter(
   userMessage += `\n\nWrite 3-5 tests for this React component. Focus on:\n`;
   userMessage += `- Does it render?\n`;
   userMessage += `- Are key UI elements present?\n`;
-  userMessage += `- Do interactions work (clicks, inputs)?\n`;
+  userMessage += `- Do inputs accept and reflect typed values?\n`;
+  userMessage += `- Does the main flow work (fill in → submit → see result)?\n`;
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,

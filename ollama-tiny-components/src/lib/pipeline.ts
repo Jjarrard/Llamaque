@@ -871,9 +871,11 @@ export default function Component() {
         userMessage += `Write the complete ${filePath} file implementing this feature:\n- ${req}`;
       }
 
-      // TSX-specific rules
+      // TSX-specific rules + UX quality reminders
       userMessage +=
-        "\n\nUse inline styles (React style objects). Export a default function component. Do NOT use import statements except React.";
+        "\n\nRules: Inline styles (React style objects). Export default function component. Do NOT use import statements except React.";
+      userMessage +=
+        "\nEvery handler must do real work (NEVER use alert() or console.log() as the action). Every input must be controlled (value + onChange). Show visual feedback after user actions.";
 
       // Include QA feedback from previous retry — only on first step
       if (i === 0 && qaReason) {
@@ -1924,6 +1926,52 @@ output: |
       });
     }
 
+    // ── UX Quality Checks ──
+
+    // Detect placeholder handlers: alert() or console.log() used as the main action
+    const alertPlaceholders =
+      component.match(/alert\s*\(\s*["'`][^"'`]*["'`]\s*\)/g) || [];
+    if (alertPlaceholders.length > 0) {
+      issues.push({
+        file: "Component.tsx",
+        issue: `Found ${alertPlaceholders.length} alert() placeholder(s) — replace with real logic (update state, show UI feedback, etc.)`,
+      });
+    }
+
+    // Detect uncontrolled inputs: <input without value= or checked=
+    // A controlled input should have value={...} or defaultValue={...}
+    const inputTags = component.match(/<input\b[^>]*>/g) || [];
+    let uncontrolledCount = 0;
+    for (const tag of inputTags) {
+      if (
+        !tag.includes("value=") &&
+        !tag.includes("defaultValue=") &&
+        !tag.includes("checked=") &&
+        !tag.includes("defaultChecked=") &&
+        !tag.includes('type="submit"') &&
+        !tag.includes('type="button"') &&
+        !tag.includes("type='submit'") &&
+        !tag.includes("type='button'")
+      ) {
+        uncontrolledCount++;
+      }
+    }
+    if (uncontrolledCount > 0) {
+      issues.push({
+        file: "Component.tsx",
+        issue: `${uncontrolledCount} uncontrolled input(s) found — add value={state} and onChange={handler} so inputs actually work`,
+      });
+    }
+
+    // Detect empty/stub handlers: functions that only have a comment or are empty
+    const stubHandlers = component.match(/=>\s*\{\s*\/\/.*\n\s*\}/g) || [];
+    if (stubHandlers.length > 0) {
+      issues.push({
+        file: "Component.tsx",
+        issue: `${stubHandlers.length} empty/stub handler(s) with only comments — implement real logic`,
+      });
+    }
+
     return issues;
   }
 
@@ -2227,6 +2275,7 @@ output: |
     const FEEDBACK_SYSTEM_PROMPT = `Fix the issues in this React component. Do NOT rewrite or replace it.
 Keep same name, structure, features. Only change what's broken.
 Must have: export default function, return with JSX, inline styles.
+All handlers must do real work (no alert placeholders). All inputs must be controlled.
 Output ONLY code. No comments in code. No explanations before or after code.
 
 Reply:

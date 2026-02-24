@@ -1,7 +1,9 @@
 import { callOllama } from "@/lib/ollama";
 
 const SYSTEM_PROMPT = `Does this React component work for what was requested?
-PASS if it mostly works. REWORK only if broken, missing core features, or completely unstyled.
+Check: Do all handlers do real work (no alert placeholders)? Are inputs controlled (value+onChange)?
+Does it show results/feedback after user actions? Is the UX flow logical?
+PASS if it mostly works. REWORK only if broken, has placeholder handlers, or missing core features.
 
 Reply:
 >>REVIEW

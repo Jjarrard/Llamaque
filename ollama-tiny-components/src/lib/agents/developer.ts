@@ -6,12 +6,18 @@ import { parseTTM, ResultBlock } from "@/lib/protocol";
  * The output is a single Component.tsx file with inline styles.
  */
 const SYSTEM_PROMPTS: Record<string, string> = {
-  "Component.tsx": `Write a complete React component. Rules:
+  "Component.tsx": `Write a complete, working React component. Rules:
 - export default function ComponentName()
 - Inline styles ONLY: style={{ }}
 - React hooks for state (useState, useEffect, useRef)
 - Must return JSX
-- Real working code, no placeholders
+- ALL event handlers must do something real. NEVER use alert() or console.log() as the main action.
+- ALL inputs must be controlled: value={state} + onChange={handler}
+- State must stay in sync. If you add items to an array, update ALL related arrays too.
+- Show clear user feedback: loading states, success messages, results/counts after actions.
+- Separate different views/modes (e.g. create vs view, logged-in vs logged-out).
+- Use visual hierarchy: headings, cards with borders/shadows, spacing, color to communicate.
+- No placeholder code. Every feature must actually work end-to-end.
 - Output ONLY code. No comments in code. No explanations before or after code.
 
 Reply:
@@ -27,9 +33,11 @@ output: |
 >>END`,
 };
 
-const DEFAULT_PROMPT = `Write a complete React component.
+const DEFAULT_PROMPT = `Write a complete, working React component.
 - export default function, inline styles only
-- Real working code, no placeholders
+- ALL handlers must work (no alert/console.log placeholders)
+- ALL inputs must be controlled (value + onChange)
+- Show feedback after user actions (results, counts, success messages)
 - Must return JSX
 - Output ONLY code. No comments in code. No explanations before or after code.
 

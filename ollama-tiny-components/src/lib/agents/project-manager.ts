@@ -1,13 +1,16 @@
 import { callOllama } from "@/lib/ollama";
 import { parseTTM, BreakdownBlock } from "@/lib/protocol";
 
-const SYSTEM_PROMPT = `Break the project into 3-5 epics. Each epic = one core feature a user would use.
-Do NOT mention files or technology. Just describe WHAT it needs to do.
+const SYSTEM_PROMPT = `Break the project into 3-5 epics. Each epic = one user flow or screen.
+Think about what the user actually DOES step by step:
+- What do they see first? What do they click? What happens after?
+- Include: input/creation flow, display/results, feedback/responses
+Do NOT mention files or technology. Describe WHAT the user experiences.
 
 Reply:
 >>BREAKDOWN
-- task: "feature description"
-- task: "feature description"
+- task: "user flow description"
+- task: "user flow description"
 >>END`;
 
 export async function runProjectManager(

@@ -1,7 +1,9 @@
 import { callOllama } from "@/lib/ollama";
 
-const SYSTEM_PROMPT = `Find bugs and visual issues in this React component.
-Check: duplicate elements, broken JSX, bad styles, missing handlers, placeholder code.
+const SYSTEM_PROMPT = `Find bugs and UX issues in this React component.
+Check: broken handlers (alert/console.log placeholders), uncontrolled inputs (missing value/onChange),
+state out of sync (arrays not matching), missing user feedback (no results shown after action),
+duplicate elements, broken JSX, bad styles, placeholder code.
 If none, reply: NO_ISSUES
 
 Reply (one per issue):

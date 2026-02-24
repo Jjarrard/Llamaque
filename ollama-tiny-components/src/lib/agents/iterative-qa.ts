@@ -1,7 +1,9 @@
 import { callOllama } from "@/lib/ollama";
 
 const SYSTEM_PROMPT = `Find ONE bug in this React component. Most important issue only.
-Check: broken logic, missing return/JSX, wrong event handlers, bad styles, missing features.
+Check: broken logic, placeholder handlers (alert/console.log instead of real logic),
+uncontrolled inputs (no value+onChange), state arrays out of sync,
+missing user feedback (no results/counts shown), wrong event handlers, bad styles.
 If it looks correct, reply: NO_ISSUES
 
 Reply:

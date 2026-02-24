@@ -9,7 +9,10 @@ import { parseTTM, BreakdownBlock, ReadyBlock } from "@/lib/protocol";
  * All features target the single Component.tsx file.
  */
 const SYSTEM_PROMPT = `Break this epic into 2-3 coding tasks for a React component (Component.tsx).
-Each task = specific React work: state, event handler, UI element, or styles.
+Each task must be specific and result in WORKING code:
+- State: what useState/useEffect hooks and what they track
+- Handlers: what happens on click/submit/change (real logic, not placeholders)
+- UI: what the user sees, with visual feedback (results, counts, success states)
 You MUST reply with >>BREAKDOWN.
 
 Reply:
