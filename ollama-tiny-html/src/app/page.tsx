@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, FormEvent } from "react";
+import { useEffect, useState, useCallback, FormEvent } from "react";
 import Link from "next/link";
 import styles from "./page.module.css";
 
@@ -31,31 +31,29 @@ export default function Home() {
   const [modelsLoading, setModelsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
-  const fetchProjects = async () => {
+  const fetchProjects = useCallback(async () => {
     const res = await fetch("/api/projects");
     if (res.ok) setProjects(await res.json());
-  };
+  }, []);
 
-  const fetchModels = async () => {
+  const fetchModels = useCallback(async () => {
     setModelsLoading(true);
     try {
       const res = await fetch("/api/models");
       if (res.ok) {
         const models: string[] = await res.json();
         setAvailableModels(models);
-        if (models.length > 0 && !primaryModel) {
-          setPrimaryModel(models[0]);
-        }
+        setPrimaryModel((prev) => prev || (models.length > 0 ? models[0] : ""));
       }
     } finally {
       setModelsLoading(false);
     }
-  };
+  }, []);
 
   useEffect(() => {
     fetchProjects();
     fetchModels();
-  }, []);
+  }, [fetchProjects, fetchModels]);
 
   const handleSubmit = async (e: FormEvent) => {
     e.preventDefault();

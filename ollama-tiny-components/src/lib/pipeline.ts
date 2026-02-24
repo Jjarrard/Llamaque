@@ -25,16 +25,9 @@ import { runManager } from "@/lib/agents/manager";
 import { runDeveloper } from "@/lib/agents/developer";
 import { runHolisticReview } from "@/lib/agents/holistic-reviewer";
 import { runIterativeQA } from "@/lib/agents/iterative-qa";
-import {
-  validateOutput,
-  autoRepairOutput,
-  validateCrossFileConsistency,
-} from "@/lib/validate";
+import { validateOutput, autoRepairOutput } from "@/lib/validate";
 import { callOllama as callOllamaFn } from "@/lib/ollama";
-import { isVagueOrCircular, extractReferences } from "@/lib/protocol";
-import { applyOperations } from "@/lib/ops/executor";
-import { compileRequirementsToOperations } from "@/lib/ops/compiler";
-import { FileBundle } from "@/lib/ops/types";
+import { isVagueOrCircular, extractReferences, parseTTM } from "@/lib/protocol";
 import fs from "fs";
 import path from "path";
 
@@ -284,6 +277,9 @@ export default function Component() {
       }
       await this.log("SYS", "Running feedback pass...");
       await this.runFeedbackPass(feedback);
+      // QA after feedback — catches corruption from small models
+      await this.log("SYS", "Running QA after feedback...");
+      await this.runFullQA();
       await this.markStageComplete("feedback");
       // Always pause after feedback so user can add more
       await db
@@ -294,16 +290,10 @@ export default function Component() {
       return;
     }
 
-    // QA-only pass: skip task processing, just run review + iterative QA + improve + consistency
+    // QA-only pass: skip task processing, just run full QA pipeline
     if (stage === "qa") {
-      await this.log(
-        "SYS",
-        "Running QA pass (review + iterative QA + improve + consistency)...",
-      );
-      await this.runHolisticReviewPass();
-      await this.runIterativeQAPass();
-      await this.runImprovementPass();
-      await this.runConsistencyCheck();
+      await this.log("SYS", "Running QA pass...");
+      await this.runFullQA();
       await this.markStageComplete("qa");
       await db
         .update(projects)
@@ -326,10 +316,7 @@ export default function Component() {
     }
 
     if (this.stage === "all" || this.stage === "execute") {
-      await this.runHolisticReviewPass();
-      await this.runIterativeQAPass();
-      await this.runImprovementPass();
-      await this.runConsistencyCheck();
+      await this.runFullQA();
       await this.markStageComplete("qa");
     }
 
@@ -772,12 +759,9 @@ export default function Component() {
         if (isDuplicate) continue;
 
         seenNormalized.add(key);
-        // Strip trailing "in Component.tsx" or old-style file references
+        // Strip trailing "in Component.tsx" from task descriptions
         const cleaned = task.description
-          .replace(
-            /\s+in\s+(Component\.tsx|index\.html|style\.css|script\.js)\s*$/i,
-            "",
-          )
+          .replace(/\s+in\s+Component\.tsx\s*$/i, "")
           .trim();
         requirements.push(cleaned);
       }
@@ -886,61 +870,81 @@ export default function Component() {
 
       userMessage = this.withCustomInstructions(userMessage);
 
-      const result = await runDeveloper(this.model, userMessage, filePath);
+      // Self-healing loop: try → validate → feed error back → retry
+      let stepPassed = false;
+      let stepUserMessage = userMessage;
 
-      if (!result.block) {
-        await this.log(
-          "DEV",
-          `Step ${i + 1} parse failure, skipping`,
-          tasksForThisStep[0]?.id || taskGroup[0].id,
-          result.prompt,
-          result.raw,
+      for (
+        let attempt = 1;
+        attempt <= Pipeline.MAX_SELF_HEAL_ATTEMPTS;
+        attempt++
+      ) {
+        const result = await runDeveloper(
+          this.model,
+          stepUserMessage,
+          filePath,
         );
-        // Mark these tasks done anyway (their requirement was attempted)
-        for (const task of tasksForThisStep) {
-          await db
-            .update(tasks)
-            .set({ output: "", filePath })
-            .where(eq(tasks.id, task.id));
-          await this.completeTask(task);
+
+        if (!result.block) {
+          await this.log(
+            "DEV",
+            `Step ${i + 1} attempt ${attempt}: parse failure`,
+            tasksForThisStep[0]?.id || taskGroup[0].id,
+            result.prompt,
+            result.raw,
+          );
+          continue;
         }
-        continue;
-      }
 
-      let output = result.block.output;
-      const { repaired, fixes } = autoRepairOutput(output, filePath);
-      if (fixes.length > 0) {
-        output = repaired;
+        let output = result.block.output;
+        const { repaired, fixes } = autoRepairOutput(output, filePath);
+        if (fixes.length > 0) {
+          output = repaired;
+          await this.log(
+            "QA",
+            `Step ${i + 1} auto-repaired: ${fixes.join(", ")}`,
+            tasksForThisStep[0]?.id || taskGroup[0].id,
+          );
+        }
+
+        // Per-step validation (lenient — allowScaffold since we're building incrementally)
+        const validation = validateOutput(output, filePath, {
+          allowScaffold: true,
+        });
+        if (validation.valid) {
+          await this.writeOutputFile(filePath, output);
+          stepsCompleted++;
+          await this.log(
+            "DEV",
+            `Step ${i + 1} PASS (${result.tokens} tokens, ${result.durationMs}ms)`,
+            tasksForThisStep[0]?.id || taskGroup[0].id,
+            result.prompt,
+            result.raw,
+          );
+          stepPassed = true;
+          break;
+        }
+
         await this.log(
           "QA",
-          `Step ${i + 1} auto-repaired: ${fixes.join(", ")}`,
-          tasksForThisStep[0]?.id || taskGroup[0].id,
-        );
-      }
-
-      // Per-step validation (lenient — allowScaffold since we're building incrementally)
-      const validation = validateOutput(output, filePath, {
-        allowScaffold: true,
-      });
-      if (validation.valid) {
-        await this.writeOutputFile(filePath, output);
-        stepsCompleted++;
-        await this.log(
-          "DEV",
-          `Step ${i + 1} PASS (${result.tokens} tokens, ${result.durationMs}ms)`,
+          `Step ${i + 1} attempt ${attempt} FAIL: ${validation.reason}`,
           tasksForThisStep[0]?.id || taskGroup[0].id,
           result.prompt,
           result.raw,
         );
-      } else {
+
+        // Feed the error back for next attempt
+        stepUserMessage =
+          userMessage +
+          `\n\nYour previous output failed validation: ${validation.reason}\nFix this error and try again.`;
+      }
+
+      if (!stepPassed) {
         await this.log(
           "QA",
-          `Step ${i + 1} FAIL: ${validation.reason} — keeping previous version`,
+          `Step ${i + 1}: all attempts failed — keeping previous version`,
           tasksForThisStep[0]?.id || taskGroup[0].id,
-          result.prompt,
-          result.raw,
         );
-        // Don't write — keep the previous good version and continue
       }
 
       // Mark this step's tasks as done immediately
@@ -1034,78 +1038,17 @@ export default function Component() {
     return taskGroup.slice(start, start + count);
   }
 
-  private getHTMLContext(_targetFile: string): string | null {
-    // Single-file model — no separate HTML context
-    return null;
-  }
-
-  private getCSSContext(_targetFile: string): string | null {
-    // Single-file model — no separate CSS context
-    return null;
-  }
-
   private async applyDeterministicOpsPrepass(
     filePath: string,
-    requirements: string[],
-    taskId: number,
+    _requirements: string[],
+    _taskId: number,
   ): Promise<string | null> {
-    let bundle = this.readFileBundle();
-
-    // Compile ALL requirements together so the compiler can detect the full
-    // app pattern (e.g. isList + hasAdd + hasToggle → generate CRUD logic).
-    // Individual per-requirement compilation loses cross-requirement context.
-    const operations = compileRequirementsToOperations(
-      filePath,
-      requirements,
-      this.projectName,
-    );
-
-    if (operations.length === 0) {
-      const draft = this.getCurrentFileContent(filePath);
-      if (!draft) return null;
-      this.deterministicDraftByFile[filePath] = draft;
-      return this.truncateForPrompt(draft, 160);
-    }
-
-    const result = applyOperations(bundle, operations);
-    const totalApplied = result.executions.filter((e) => e.applied).length;
-    bundle = result.files;
-
-    if (totalApplied > 0) {
-      this.writeFileBundle(bundle);
-      await this.log(
-        "SYS",
-        `Applied ${totalApplied}/${operations.length} deterministic ops for ${filePath}`,
-        taskId,
-      );
-    }
-
+    // Single-component model — deterministic ops are not used for TSX.
+    // Just return the current file content as the draft for the LLM prompt.
     const draft = this.getCurrentFileContent(filePath);
     if (!draft) return null;
     this.deterministicDraftByFile[filePath] = draft;
     return this.truncateForPrompt(draft, 160);
-  }
-
-  private readFileBundle(): FileBundle {
-    const outDir = this.outputDir();
-    const fullPath = path.join(outDir, "Component.tsx");
-    const content = fs.existsSync(fullPath)
-      ? fs.readFileSync(fullPath, "utf-8")
-      : "";
-    return {
-      html: "",
-      css: "",
-      js: content,
-    };
-  }
-
-  private writeFileBundle(bundle: FileBundle) {
-    const outDir = this.outputDir();
-    if (!fs.existsSync(outDir)) {
-      fs.mkdirSync(outDir, { recursive: true });
-    }
-    // Write TSX content (stored in js field of bundle)
-    fs.writeFileSync(path.join(outDir, "Component.tsx"), bundle.js, "utf-8");
   }
 
   private getCurrentFileContent(filePath: string): string | null {
@@ -1260,64 +1203,19 @@ export default function Component() {
     }
   }
 
-  private removeDuplicateJsDeclarations(source: string): string {
-    const countChar = (value: string, char: string) =>
-      value.split(char).length - 1;
+  // ─────────────────────────────────────────────
+  //  FULL QA PIPELINE (reusable: called after execute AND feedback)
+  // ─────────────────────────────────────────────
 
-    const lines = source.split("\n");
-    const seenConsts = new Set<string>();
-    const seenFunctions = new Set<string>();
-    const output: string[] = [];
-
-    let skipFunction = false;
-    let functionBraceDepth = 0;
-
-    for (const line of lines) {
-      const constMatch = line.match(
-        /^\s*(?:const|let|var)\s+([A-Za-z_$][\w$]*)\b/,
-      );
-      if (constMatch && !skipFunction) {
-        const name = constMatch[1];
-        if (seenConsts.has(name)) {
-          continue;
-        }
-        seenConsts.add(name);
-      }
-
-      const fnMatch = line.match(/^\s*function\s+([A-Za-z_$][\w$]*)\s*\(/);
-      if (fnMatch && !skipFunction) {
-        const name = fnMatch[1];
-        if (seenFunctions.has(name)) {
-          skipFunction = true;
-          functionBraceDepth = countChar(line, "{") - countChar(line, "}");
-          if (functionBraceDepth <= 0) {
-            skipFunction = false;
-          }
-          continue;
-        }
-        seenFunctions.add(name);
-      }
-
-      if (skipFunction) {
-        functionBraceDepth += countChar(line, "{") - countChar(line, "}");
-        if (functionBraceDepth <= 0) {
-          skipFunction = false;
-        }
-        continue;
-      }
-
-      output.push(line);
-    }
-
-    return output.join("\n");
-  }
-
-  private validateCrossFileRefs(
-    _filePath: string,
-    _content: string,
-  ): { valid: boolean; reason?: string } {
-    // Single-file model — no cross-file validation needed
-    return { valid: true };
+  /**
+   * Runs the complete QA pipeline: holistic review → iterative QA → improve → consistency.
+   * Used after execute and after feedback so both paths get the same checks.
+   */
+  private async runFullQA() {
+    await this.runHolisticReviewPass();
+    await this.runIterativeQAPass();
+    await this.runImprovementPass();
+    await this.runConsistencyCheck();
   }
 
   // ─────────────────────────────────────────────
@@ -1362,10 +1260,16 @@ export default function Component() {
       });
     }
 
-    // Should return JSX
-    if (
-      !component.includes("return") ||
-      (!component.includes("<") && !component.includes("React.createElement"))
+    // Must return JSX
+    if (!component.includes("return")) {
+      issues.push({
+        file: "Component.tsx",
+        issue:
+          "Component has no return statement — it must return JSX elements",
+      });
+    } else if (
+      !component.includes("<") &&
+      !component.includes("React.createElement")
     ) {
       issues.push({
         file: "Component.tsx",
@@ -1374,10 +1278,23 @@ export default function Component() {
       });
     }
 
-    // Check for useState/useEffect usage patterns
-    if (lower.includes("usestate") && !lower.includes("import")) {
-      // If they reference hooks but don't import React, it won't work in CDN mode
-      // Actually in CDN mode React is global, so this is fine
+    // Check for truncated/incomplete functions (mismatched braces)
+    const stripped = component
+      .replace(/\/\/.*$/gm, "")
+      .replace(/\/\*[\s\S]*?\*\//g, "")
+      .replace(/"(?:[^"\\]|\\.)*"/g, '""')
+      .replace(/'(?:[^'\\]|\\.)*'/g, "''")
+      .replace(/`(?:[^`\\]|\\.)*`/g, "``");
+    let braceCount = 0;
+    for (const ch of stripped) {
+      if (ch === "{") braceCount++;
+      if (ch === "}") braceCount--;
+    }
+    if (braceCount !== 0) {
+      issues.push({
+        file: "Component.tsx",
+        issue: `Unbalanced braces (${braceCount > 0 ? braceCount + " unclosed" : Math.abs(braceCount) + " extra closing"}) — component may be truncated`,
+      });
     }
 
     return issues;
@@ -1401,6 +1318,13 @@ export default function Component() {
 
     // Phase A: Programmatic quality checks (reliable, catches what LLMs miss)
     const structuralIssues = this.checkOutputQuality(component);
+
+    // If no structural issues, skip the expensive LLM review entirely
+    // Small models tend to find phantom issues and introduce bugs while "fixing" them
+    if (structuralIssues.length === 0) {
+      await this.log("QA", "PASS — no structural issues, skipping LLM review");
+      return;
+    }
 
     // Phase B: LLM holistic review (may find issues the programmatic checks miss)
     const projectFiles: { path: string; content: string }[] = [];
@@ -1560,6 +1484,9 @@ export default function Component() {
   /** Max iterations for the find-one-fix-one QA loop */
   private static readonly MAX_ITERATIVE_QA_ROUNDS = 5;
 
+  /** Max attempts to self-heal a broken component before giving up */
+  private static readonly MAX_SELF_HEAL_ATTEMPTS = 3;
+
   private async runIterativeQAPass() {
     const outDir = this.outputDir();
     if (!fs.existsSync(outDir)) return;
@@ -1711,8 +1638,8 @@ export default function Component() {
   // ─────────────────────────────────────────────
 
   /**
-   * Takes user feedback, breaks it into file-targeted fixes via LLM,
-   * applies each fix through the Developer agent, then runs a quick QA pass.
+   * Applies user feedback to the component with backup, self-healing retry,
+   * and validation. If the result is worse than the original, restores backup.
    */
   async runFeedbackPass(feedback: string) {
     const outDir = this.outputDir();
@@ -1721,26 +1648,15 @@ export default function Component() {
       return;
     }
 
-    const readFile = (name: string) => {
-      const fullPath = path.join(outDir, name);
-      if (!fs.existsSync(fullPath)) return "";
-      return fs.readFileSync(fullPath, "utf-8");
-    };
-
-    // Read current files
-    const currentFiles: { path: string; content: string }[] = [];
-    for (const file of TEMPLATE_FILES) {
-      const content = readFile(file);
-      if (content.trim().length > 0) {
-        currentFiles.push({ path: file, content });
-      }
+    const componentPath = path.join(outDir, "Component.tsx");
+    if (!fs.existsSync(componentPath)) {
+      await this.log("FEEDBACK", "No Component.tsx found — nothing to modify.");
+      return;
     }
 
-    if (currentFiles.length === 0) {
-      await this.log(
-        "FEEDBACK",
-        "All output files are empty — run Execute first.",
-      );
+    const original = fs.readFileSync(componentPath, "utf-8");
+    if (original.trim().length === 0) {
+      await this.log("FEEDBACK", "Component.tsx is empty — run Execute first.");
       return;
     }
 
@@ -1749,185 +1665,115 @@ export default function Component() {
       `Processing feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
     );
 
-    // Use LLM to break feedback into file-targeted changes
-    const fileList = currentFiles
-      .map((f) => `${f.path}:\n${this.truncateForPrompt(f.content, 80)}`)
-      .join("\n\n");
+    // Backup before modifying
+    const backupPath = componentPath + ".bak";
+    fs.writeFileSync(backupPath, original, "utf-8");
+    await this.log("FEEDBACK", "Backed up Component.tsx");
 
-    const analysisPrompt = `You are a code reviewer analyzing user feedback for a web project.
+    const FEEDBACK_SYSTEM_PROMPT = `Fix the issues in this React component. Do NOT rewrite or replace it.
+Keep same name, structure, features. Only change what's broken.
+Must have: export default function, return with JSX, inline styles.
 
-PROJECT: ${this.projectName} — ${this.projectDescription}
+Reply:
+>>RESULT
+status: DONE
+filePath: Component.tsx
+output: |
+  (full corrected component code)
+>>END`;
 
-CURRENT FILES:
-${fileList}
+    let currentContent = original;
+    let applied = false;
 
-USER FEEDBACK:
-${feedback}
-
-Break this feedback into specific file changes. For each change, specify:
-- FILE: Component.tsx (this is the only file)
-- PROBLEM: what needs to change
-- FIX: specific description of how to fix it
-
-Format your response EXACTLY like this (one or more entries):
-
-CHANGE 1:
-FILE: <filename>
-PROBLEM: <what's wrong or needs changing>
-FIX: <specific fix description>
-
-CHANGE 2:
-FILE: <filename>
-PROBLEM: <what's wrong or needs changing>
-FIX: <specific fix description>
-
-Only include changes that are relevant to the feedback. Be specific and actionable.`;
-
-    const analysisResult = await this.callFeedbackAnalysis(analysisPrompt);
-
-    if (!analysisResult) {
+    // Self-healing retry loop: apply → validate → feed error back → retry
+    for (
+      let attempt = 1;
+      attempt <= Pipeline.MAX_SELF_HEAL_ATTEMPTS;
+      attempt++
+    ) {
       await this.log(
         "FEEDBACK",
-        "Failed to analyze feedback — LLM returned empty response.",
-      );
-      return;
-    }
-
-    await this.log(
-      "FEEDBACK",
-      `Analysis complete`,
-      undefined,
-      analysisPrompt,
-      analysisResult,
-    );
-
-    // Parse the changes
-    const changes: { file: string; problem: string; fix: string }[] = [];
-    const changeBlocks = analysisResult
-      .split(/CHANGE\s+\d+:/i)
-      .filter((b) => b.trim());
-
-    for (const block of changeBlocks) {
-      const fileMatch = block.match(/FILE:\s*(.+)/i);
-      const problemMatch = block.match(/PROBLEM:\s*(.+)/i);
-      const fixMatch = block.match(/FIX:\s*(.+)/i);
-
-      if (fileMatch && problemMatch && fixMatch) {
-        const resolvedFile = this.resolveTargetFile(fileMatch[1].trim());
-        if (resolvedFile) {
-          changes.push({
-            file: resolvedFile,
-            problem: problemMatch[1].trim(),
-            fix: fixMatch[1].trim(),
-          });
-        }
-      }
-    }
-
-    if (changes.length === 0) {
-      await this.log(
-        "FEEDBACK",
-        "Could not parse any actionable changes from feedback analysis.",
-      );
-      return;
-    }
-
-    await this.log("FEEDBACK", `Found ${changes.length} change(s) to apply.`);
-
-    // Apply each change through the Developer agent
-    let applied = 0;
-    for (const change of changes) {
-      if (this.aborted) break;
-
-      const existingContent = readFile(change.file);
-      if (!existingContent || existingContent.trim().length < 10) {
-        await this.log("FEEDBACK", `Skipping ${change.file} — file is empty.`);
-        continue;
-      }
-
-      await this.log(
-        "FEEDBACK",
-        `Applying: [${change.file}] ${change.problem}`,
+        `Attempt ${attempt}/${Pipeline.MAX_SELF_HEAL_ATTEMPTS}...`,
       );
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${change.file}:\n${existingContent}\n\n`;
-      userMessage += `User feedback requires this change:\nProblem: ${change.problem}\nFix: ${change.fix}\n\n`;
-      userMessage += `Apply ONLY this change. Keep everything else exactly the same. Rewrite the COMPLETE ${change.file} file.`;
+      userMessage += `EXISTING Component.tsx (edit this, do NOT replace):\n\`\`\`tsx\n${currentContent}\n\`\`\`\n\n`;
+      userMessage += `USER FEEDBACK: "${feedback}"\n\n`;
+      userMessage += `Output the COMPLETE corrected Component.tsx.`;
 
       userMessage = this.withCustomInstructions(userMessage);
 
-      const devResult = await runDeveloper(
-        this.model,
-        userMessage,
-        change.file,
-      );
-
-      if (devResult.block) {
-        const output = devResult.block.output;
-        const { repaired } = autoRepairOutput(output, change.file);
-        const validation = validateOutput(repaired, change.file);
-        if (validation.valid) {
-          await this.writeOutputFile(change.file, repaired);
-          await this.log(
-            "FEEDBACK",
-            `Applied fix to ${change.file} (${devResult.tokens} tokens)`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-          applied++;
-        } else {
-          await this.log(
-            "FEEDBACK",
-            `Fix for ${change.file} failed validation: ${validation.reason} — keeping original`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-        }
-      } else {
-        await this.log(
-          "FEEDBACK",
-          `Could not apply fix to ${change.file} — Developer parse failure`,
-          undefined,
-          devResult.prompt,
-          devResult.raw,
-        );
-      }
-    }
-
-    await this.log(
-      "FEEDBACK",
-      `Applied ${applied}/${changes.length} change(s).`,
-    );
-
-    // Quick QA pass on the modified files
-    if (applied > 0 && !this.aborted) {
-      await this.log("FEEDBACK", "Running quick QA pass on changes...");
-      await this.runConsistencyCheck();
-      await this.log("FEEDBACK", "Feedback round complete.");
-    }
-  }
-
-  /** Call Ollama with the feedback agent role for feedback analysis */
-  private async callFeedbackAnalysis(
-    userMessage: string,
-  ): Promise<string | null> {
-    try {
-      const systemPrompt =
-        "You are a code reviewer that analyzes user feedback and breaks it into specific, actionable file changes. Always respond in the exact format requested.";
       const result = await callOllamaFn(
         this.model,
         "feedback",
-        systemPrompt,
+        FEEDBACK_SYSTEM_PROMPT,
         userMessage,
       );
-      return result.text || null;
-    } catch (err) {
-      console.error("Feedback analysis failed:", err);
-      return null;
+
+      const parsed = parseTTM(result.text);
+      const block =
+        parsed && "output" in parsed ? (parsed as { output: string }) : null;
+
+      if (!block) {
+        await this.log(
+          "FEEDBACK",
+          `Attempt ${attempt}: parse failure — retrying`,
+          undefined,
+          result.prompt,
+          result.text,
+        );
+        continue;
+      }
+
+      const { repaired, fixes } = autoRepairOutput(
+        block.output,
+        "Component.tsx",
+      );
+      if (fixes.length > 0) {
+        await this.log("FEEDBACK", `Auto-repaired: ${fixes.join(", ")}`);
+      }
+
+      const validation = validateOutput(repaired, "Component.tsx");
+      if (validation.valid) {
+        await this.writeOutputFile("Component.tsx", repaired);
+        currentContent = repaired;
+        applied = true;
+        await this.log(
+          "FEEDBACK",
+          `Applied feedback (${result.tokens} tokens)`,
+          undefined,
+          result.prompt,
+          result.text,
+        );
+        break;
+      }
+
+      // Validation failed — feed the error back for the next attempt
+      await this.log(
+        "FEEDBACK",
+        `Attempt ${attempt} failed: ${validation.reason}`,
+        undefined,
+        result.prompt,
+        result.text,
+      );
+      feedback = `${feedback}\n\nYour previous fix failed validation: ${validation.reason}. Fix this error too.`;
     }
+
+    if (!applied) {
+      // All attempts failed — restore backup
+      fs.writeFileSync(componentPath, original, "utf-8");
+      await this.log(
+        "FEEDBACK",
+        "All attempts failed — restored original component",
+      );
+    }
+
+    // Clean up backup
+    if (fs.existsSync(backupPath)) {
+      fs.unlinkSync(backupPath);
+    }
+
+    await this.log("FEEDBACK", "Feedback pass complete");
   }
 
   /** Map an LLM-returned filename to Component.tsx */
@@ -1956,7 +1802,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
   }
 
   // ─────────────────────────────────────────────
-  //  PHASE 7: IMPROVE (Cross-file bug review)
+  //  PHASE 7: IMPROVE (Component bug review)
   // ─────────────────────────────────────────────
 
   private async runImprovementPass() {
@@ -1983,7 +1829,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
 
     const userRequest = `${project.name}: ${project.description}`;
 
-    await this.log("IMP", "Reviewing all files for cross-file bugs...");
+    await this.log("IMP", "Reviewing component for bugs...");
 
     const result = await runImprover(this.model, userRequest, projectFiles);
 
@@ -2079,121 +1925,16 @@ Only include changes that are relevant to the feedback. Be specific and actionab
   }
 
   // ─────────────────────────────────────────────
-  //  PHASE 6: CONSISTENCY CHECK (Programmatic cross-file validation + auto-fix)
+  //  PHASE 6: CONSISTENCY CHECK (Programmatic validation)
   // ─────────────────────────────────────────────
 
   private async runConsistencyCheck() {
-    const outDir = this.outputDir();
-    if (!fs.existsSync(outDir)) return;
-
-    const readFile = (name: string) => {
-      const fullPath = path.join(outDir, name);
-      if (!fs.existsSync(fullPath)) return "";
-      return fs.readFileSync(fullPath, "utf-8");
-    };
-
-    const component = readFile("Component.tsx");
-
-    if (component.trim().length < 20) return;
-
-    await this.log("CHK", "Running component consistency check...");
-
-    const issues = validateCrossFileConsistency(component, "", "");
-
-    if (issues.length === 0) {
-      await this.log("CHK", "All files are consistent — no cross-file issues");
-      return;
-    }
-
-    const errors = issues.filter((i) => i.severity === "error");
-    const warnings = issues.filter((i) => i.severity === "warning");
-
-    for (const warn of warnings) {
-      await this.log("CHK", `WARN: [${warn.file}] ${warn.message}`);
-    }
-
-    if (errors.length === 0) {
-      await this.log(
-        "CHK",
-        `Consistency check done: ${warnings.length} warning(s), 0 errors`,
-      );
-      return;
-    }
-
+    // Single-component model — no cross-file consistency to check.
+    // Structural issues are already caught by the holistic review.
     await this.log(
       "CHK",
-      `Found ${errors.length} error(s), ${warnings.length} warning(s) — attempting auto-fix`,
+      "Component consistency check — OK (single-file model)",
     );
-
-    // Group errors by file
-    const errorsByFile: Record<string, string[]> = {};
-    for (const err of errors) {
-      if (!errorsByFile[err.file]) errorsByFile[err.file] = [];
-      errorsByFile[err.file].push(err.message);
-    }
-
-    // Fix each file that has errors
-    for (const filePath of FILE_ORDER) {
-      if (this.aborted) break;
-      const fileErrors = errorsByFile[filePath];
-      if (!fileErrors || fileErrors.length === 0) continue;
-
-      const fixList = fileErrors.map((e, i) => `${i + 1}. ${e}`).join("\n");
-      await this.log(
-        "CHK",
-        `Fixing ${filePath}: ${fileErrors.length} issue(s)`,
-      );
-
-      const existingContent = readFile(filePath);
-      const htmlContext = "";
-
-      let userMessage = `Project: ${this.projectName}\n\n`;
-      if (htmlContext) {
-        userMessage += `HTML file:\n${htmlContext}\n\n`;
-      }
-      if (existingContent) {
-        userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
-      }
-      userMessage += `Fix these cross-file consistency issues and rewrite the COMPLETE ${filePath} file:\n${fixList}`;
-
-      userMessage = this.withCustomInstructions(userMessage);
-
-      const devResult = await runDeveloper(this.model, userMessage, filePath);
-
-      if (devResult.block) {
-        const output = devResult.block.output;
-        const { repaired } = autoRepairOutput(output, filePath);
-        const validation = validateOutput(repaired, filePath);
-        if (validation.valid) {
-          await this.writeOutputFile(filePath, repaired);
-          await this.log(
-            "CHK",
-            `Fixed ${filePath} (${devResult.tokens} tokens)`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-        } else {
-          await this.log(
-            "CHK",
-            `Fix for ${filePath} failed validation: ${validation.reason} — keeping original`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-        }
-      } else {
-        await this.log(
-          "CHK",
-          `Could not fix ${filePath} — Developer parse failure`,
-          undefined,
-          devResult.prompt,
-          devResult.raw,
-        );
-      }
-    }
-
-    await this.log("CHK", "Consistency check complete");
   }
 
   // ─────────────────────────────────────────────

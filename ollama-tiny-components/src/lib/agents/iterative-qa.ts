@@ -1,25 +1,14 @@
 import { callOllama } from "@/lib/ollama";
 
-const SYSTEM_PROMPT = `You are a QA tester inspecting a React TSX component. Find exactly ONE bug, mistake, or quality issue.
+const SYSTEM_PROMPT = `Find ONE bug in this React component. Most important issue only.
+Check: broken logic, missing return/JSX, wrong event handlers, bad styles, missing features.
+If it looks correct, reply: NO_ISSUES
 
-Look for (in priority order):
-1. JSX elements in the wrong place (e.g. list inside a form, elements outside the main container)
-2. Missing functionality that was requested but not implemented
-3. Missing or broken inline styles (no centering, no spacing, elements overlapping)
-4. Event handlers not wired up or referencing wrong state
-5. Missing hover/focus states on interactive elements (use onMouseEnter/onMouseLeave with state)
-6. Placeholder code that was never implemented
-7. Missing default export or incorrect component structure
-8. State management issues (missing useState, stale closures)
-
-Report ONLY ONE issue — the most important one.
-If the component looks correct and complete, reply: NO_ISSUES
-
-Reply in this EXACT format:
+Reply:
 >>ISSUE
 file: Component.tsx
-problem: (one sentence describing the specific problem)
-fix: (one sentence describing exactly what to change)
+problem: (what is wrong)
+fix: (how to fix it)
 >>END`;
 
 export interface SingleIssue {
@@ -63,7 +52,6 @@ export async function runIterativeQA(
     "qa",
     SYSTEM_PROMPT,
     userMessage,
-    { numPredict: 200 },
   );
 
   // Check for no issues

@@ -8,22 +8,14 @@ import { parseTTM, BreakdownBlock, ReadyBlock } from "@/lib/protocol";
  * Depth-2 tasks are automatically marked READY by the pipeline.
  * All features target the single Component.tsx file.
  */
-const SYSTEM_PROMPT = `You are a Task Manager. The project outputs a single React TSX component file (Component.tsx) with inline styles.
+const SYSTEM_PROMPT = `Break this epic into 2-3 coding tasks for a React component (Component.tsx).
+Each task = specific React work: state, event handler, UI element, or styles.
+You MUST reply with >>BREAKDOWN.
 
-Break this epic into 2-3 features for the Component.tsx file.
-Each feature should describe a concrete coding task for the React component.
-
-Rules:
-- Features must directly relate to the epic — do NOT add unrelated features
-- Each feature should describe a concrete coding task, not a vague goal
-- All features target Component.tsx (the only output file)
-- Think in terms of React: state, event handlers, JSX structure, inline styles
-- You MUST reply with >>BREAKDOWN — never use >>READY for an epic
-
-Reply EXACTLY:
+Reply:
 >>BREAKDOWN
-- task: "[specific React component work for this epic]"
-- task: "[specific React component work for this epic]"
+- task: "specific coding task"
+- task: "specific coding task"
 >>END`;
 
 export async function runManager(

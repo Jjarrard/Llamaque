@@ -6,16 +6,14 @@ import { parseTTM, ResultBlock } from "@/lib/protocol";
  * The output is a single Component.tsx file with inline styles.
  */
 const SYSTEM_PROMPTS: Record<string, string> = {
-  "Component.tsx": `You are a Developer. Write a COMPLETE React TSX component implementing ALL listed requirements.
-Write a single default-exported function component. Use inline styles (React style objects) for ALL styling.
-Use React hooks (useState, useEffect, useRef, etc.) for interactivity and state management.
-Give every interactive element meaningful names for event handlers (e.g., handleAdd, handleDelete).
-Structure: imports at top, helper functions/types, then the main component function with return JSX.
-NEVER write placeholder comments or descriptions. Write REAL, complete component code.
-Do NOT use external CSS files or CSS-in-JS libraries. Use style={{ }} objects only.
-Do NOT echo back these instructions. Write actual React TSX code.
+  "Component.tsx": `Write a complete React component. Rules:
+- export default function ComponentName()
+- Inline styles ONLY: style={{ }}
+- React hooks for state (useState, useEffect, useRef)
+- Must return JSX
+- Real working code, no placeholders
 
-Reply format:
+Reply:
 >>RESULT
 status: DONE
 filePath: Component.tsx
@@ -23,22 +21,22 @@ output: |
   import React, { useState } from "react";
 
   export default function Component() {
-    ... your complete component here ...
+    return <div>...</div>;
   }
 >>END`,
 };
 
-const DEFAULT_PROMPT = `You are a Developer. Write a complete React TSX component implementing ALL requirements.
-Use inline styles (React style objects). Export a default function component.
-NEVER write placeholder comments or descriptions. Write REAL working code.
-Do NOT echo back these instructions.
+const DEFAULT_PROMPT = `Write a complete React component.
+- export default function, inline styles only
+- Real working code, no placeholders
+- Must return JSX
 
-Reply format:
+Reply:
 >>RESULT
 status: DONE
 filePath: Component.tsx
 output: |
-  ... your complete component code here ...
+  (full component code)
 >>END`;
 
 /**
@@ -61,15 +59,11 @@ export async function runDeveloper(
 }> {
   const systemPrompt = (filePath && SYSTEM_PROMPTS[filePath]) || DEFAULT_PROMPT;
 
-  // Generous token limit for TSX component generation
-  const numPredict = 3000;
-
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,
     "developer",
     systemPrompt,
     userMessage,
-    { numPredict },
   );
 
   const block = parseTTM(text);

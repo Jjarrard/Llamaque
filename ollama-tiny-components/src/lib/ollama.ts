@@ -25,19 +25,19 @@ interface AgentConfig {
 }
 
 const AGENT_CONFIGS: Record<AgentRole, AgentConfig> = {
-  "project-manager": { temperature: 0.3, numPredict: 400 },
-  reviewer: { temperature: 0, numPredict: 300 },
-  improver: { temperature: 0, numPredict: 400 },
-  manager: { temperature: 0, numPredict: 250 },
-  developer: { temperature: 0, numPredict: 600 },
-  qa: { temperature: 0, numPredict: 100 },
-  summariser: { temperature: 0, numPredict: 100 },
-  editor: { temperature: 0, numPredict: 300 },
-  feedback: { temperature: 0, numPredict: 400 },
+  "project-manager": { temperature: 0.3, numPredict: -1 },
+  reviewer: { temperature: 0, numPredict: -1 },
+  improver: { temperature: 0, numPredict: -1 },
+  manager: { temperature: 0, numPredict: -1 },
+  developer: { temperature: 0, numPredict: -1 },
+  qa: { temperature: 0, numPredict: -1 },
+  summariser: { temperature: 0, numPredict: -1 },
+  editor: { temperature: 0, numPredict: -1 },
+  feedback: { temperature: 0, numPredict: -1 },
 };
 
-/** Context window limit — prompt + response must fit within this */
-const NUM_CTX = 4096;
+/** Context window — set high, let the model use what it needs */
+const NUM_CTX = 32768;
 
 /** Keep model loaded between calls (seconds). -1 = forever. */
 const KEEP_ALIVE = "30m";

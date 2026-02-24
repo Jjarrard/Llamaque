@@ -377,7 +377,7 @@ export function validateOutput(
         };
       }
     }
-    // TSX-specific: must have a default export and return JSX
+    // TSX-specific: must have a default export, return statement, and JSX
     if (isJsx) {
       if (!trimmed.includes("export default")) {
         return {
@@ -385,6 +385,43 @@ export function validateOutput(
           reason:
             "TSX component must have a default export (e.g., export default function Component).",
         };
+      }
+      // Must have a return statement (components that don't return JSX render nothing)
+      if (!trimmed.includes("return")) {
+        return {
+          valid: false,
+          reason: "Component has no return statement — it must return JSX.",
+        };
+      }
+      // Must contain JSX (angle brackets in a return context, or React.createElement)
+      const hasJsx =
+        /<\w/.test(trimmed) || trimmed.includes("React.createElement");
+      if (!hasJsx) {
+        return {
+          valid: false,
+          reason:
+            "Component has no JSX — it must return rendered elements like <div>.",
+        };
+      }
+      // Check for truncated/incomplete component (function body ends abruptly)
+      // A component with `return (` but no closing `)` for it is truncated
+      const returnCount = (trimmed.match(/\breturn\s*[\(\<]/g) || []).length;
+      if (
+        returnCount === 0 &&
+        trimmed.includes("return") &&
+        !trimmed.includes("return null") &&
+        !trimmed.includes("return;")
+      ) {
+        // Has "return" but not followed by JSX or null — likely truncated
+        const lastReturn = trimmed.lastIndexOf("return");
+        const afterReturn = trimmed.slice(lastReturn + 6).trim();
+        if (afterReturn.length < 5) {
+          return {
+            valid: false,
+            reason:
+              "Component return statement appears truncated — incomplete code.",
+          };
+        }
       }
     }
     // Check JS file is not just comments
@@ -395,7 +432,7 @@ export function validateOutput(
     if (jsStripped.length < 10) {
       return {
         valid: false,
-        reason: "JavaScript file contains only comments, no actual code",
+        reason: "Component file contains only comments, no actual code",
       };
     }
     // Scaffold detection: reject JS that has functions but no real logic
@@ -415,7 +452,7 @@ export function validateOutput(
         .join(", ");
       return {
         valid: false,
-        reason: `JavaScript file has duplicate declarations: ${names}. Each function/variable must be declared only once.`,
+        reason: `Component file has duplicate declarations: ${names}. Each function/variable must be declared only once.`,
       };
     }
   }
@@ -714,7 +751,7 @@ function detectJsScaffold(source: string): ValidationResult {
     return {
       valid: false,
       reason:
-        "JavaScript file contains only scaffold/empty functions with no real logic. Functions need actual implementation.",
+        "Component file contains only scaffold/empty functions with no real logic. Functions need actual implementation.",
     };
   }
 
@@ -785,9 +822,6 @@ function looksLikeInstructionDump(output: string): boolean {
     "previous attempt failed:",
     "you must respond with",
     "never write placeholder",
-    "current script.js draft",
-    "current index.html draft",
-    "current style.css draft",
     "current Component.tsx draft",
     "current component.tsx draft",
     "do not echo back",
@@ -811,7 +845,8 @@ function looksLikeInstructionDump(output: string): boolean {
 }
 
 // ─────────────────────────────────────────────
-//  Cross-file consistency validation
+// ─────────────────────────────────────────────
+//  Consistency validation (no-op for single-component model)
 // ─────────────────────────────────────────────
 
 export interface ConsistencyIssue {
@@ -821,15 +856,11 @@ export interface ConsistencyIssue {
 }
 
 /**
- * Validate cross-file consistency.
  * In the single-file React component model, there are no cross-file
- * concerns. Returns an empty issues list.
+ * concerns. Retained for API compatibility; always returns empty.
  */
 export function validateCrossFileConsistency(
-  _html: string,
-  _css: string,
-  _js: string,
+  _component: string,
 ): ConsistencyIssue[] {
-  // Single-file component model — no cross-file validation needed
   return [];
 }

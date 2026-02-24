@@ -1,18 +1,11 @@
 import { callOllama } from "@/lib/ollama";
 
-const SYSTEM_PROMPT = `You are a Feature Reviewer. Given a user's project request and numbered epics, reply with the NUMBERS to REMOVE.
+const SYSTEM_PROMPT = `Given epics for a project, reply with numbers to REMOVE.
+Only remove epics totally unrelated to the project or exact duplicates.
+When in doubt, KEEP. Most times all are good.
 
-Rules:
-- REMOVE only epics that are completely unrelated to the user's project or exact duplicates.
-- KEEP epics that directly relate to the user's project.
-- KEEP supporting features (styling, interactivity) every web app needs.
-- When in doubt, KEEP — do NOT remove.
-- Most of the time, ALL epics are good and nothing should be removed.
-
-Reply with ONLY a comma-separated list of numbers to REMOVE. Example:
-REMOVE: 3, 5
-
-If ALL epics are good (which is common), reply: REMOVE: NONE`;
+Reply: REMOVE: NONE
+Or: REMOVE: 3, 5`;
 
 export interface ReviewResult {
   kept: string[];
@@ -41,7 +34,6 @@ Which numbers should we REMOVE? (Reply REMOVE: NONE if all are good)`;
     "reviewer",
     SYSTEM_PROMPT,
     userMessage,
-    { numPredict: 100 },
   );
 
   // Strip >> prefill prefix from all lines
