@@ -1,0 +1,274 @@
+import { callOllama } from "@/lib/ollama";
+import { parseTTM, ResultBlock } from "@/lib/protocol";
+
+/**
+ * Developer agent — writes or edits a single file.
+ *
+ * Adapts its system prompt based on the target file's extension/type.
+ * The pipeline builds the full userMessage (including context, requirements,
+ * QA feedback, etc.) — this function provides the appropriate system prompt
+ * and forwards to Ollama.
+ */
+
+/** Generate a system prompt appropriate for the given file type */
+function getSystemPrompt(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+
+  switch (ext) {
+    case "tsx":
+    case "jsx":
+      return `Write a complete, working React component. Rules:
+- export default function ComponentName()
+- Inline styles ONLY: style={{ }}
+- React hooks for state (useState, useEffect, useRef)
+- Must return JSX
+- ALL event handlers must do something real. NEVER use alert() or console.log() as the main action.
+- ALL inputs must be controlled: value={state} + onChange={handler}
+- State must stay in sync. If you add items to an array, update ALL related arrays too.
+- Show clear user feedback: loading states, success messages, results/counts after actions.
+- No placeholder code. Every feature must actually work end-to-end.
+- Output ONLY code. No comments in code. No explanations before or after code.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  import React, { useState } from "react";
+
+  export default function Component() {
+    return <div>...</div>;
+  }
+>>END`;
+
+    case "ts":
+      return `Write complete, working TypeScript code. Rules:
+- Use proper TypeScript types and interfaces
+- Export functions and types that other files may need
+- Handle errors properly
+- Output ONLY code. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  (complete TypeScript code)
+>>END`;
+
+    case "js":
+      return `Write complete, working JavaScript code. Rules:
+- Use modern ES6+ syntax (const, let, arrow functions, destructuring)
+- Export functions that other files may need
+- Handle errors properly
+- Output ONLY code. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  (complete JavaScript code)
+>>END`;
+
+    case "py":
+      return `Write complete, working Python code. Rules:
+- Use Python 3.10+ syntax
+- Include proper imports at the top
+- Use type hints where helpful
+- Handle errors with try/except where appropriate
+- Use if __name__ == "__main__": for scripts
+- Output ONLY code. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  (complete Python code)
+>>END`;
+
+    case "html":
+    case "htm":
+      return `Write a complete HTML page. Rules:
+- Include <!DOCTYPE html>, <html>, <head>, <body>
+- Include <meta charset="UTF-8"> and viewport meta
+- Inline CSS in a <style> tag (no external stylesheets)
+- Inline JavaScript in a <script> tag (no external scripts)
+- Must be a complete, working page — not a fragment
+- Output ONLY HTML. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  <!DOCTYPE html>
+  <html lang="en">
+  ...
+  </html>
+>>END`;
+
+    case "css":
+      return `Write complete CSS. Rules:
+- Use modern CSS (flexbox, grid, custom properties)
+- Mobile-friendly: use relative units and media queries
+- Output ONLY CSS. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  (complete CSS)
+>>END`;
+
+    case "md":
+    case "markdown":
+      return `Write a complete, well-structured Markdown document. Rules:
+- Use proper Markdown formatting: headings (#), lists, bold, code blocks
+- Organize with clear sections and subsections
+- Be thorough and specific — no placeholder text
+- Include concrete details, examples, and actionable content
+- Output ONLY Markdown. No meta-commentary.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  # Title
+  ...
+>>END`;
+
+    case "json":
+      return `Write valid JSON. Rules:
+- Must be valid, parseable JSON
+- Use proper indentation (2 spaces)
+- Output ONLY JSON. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  {
+    ...
+  }
+>>END`;
+
+    case "yaml":
+    case "yml":
+      return `Write valid YAML. Rules:
+- Must be valid, parseable YAML
+- Use proper indentation (2 spaces)
+- Output ONLY YAML. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  (complete YAML)
+>>END`;
+
+    default:
+      return `Write a complete, working file. Rules:
+- Output must be the complete file contents
+- No placeholder code or TODO comments
+- Every feature must actually work
+- Output ONLY the file contents. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${filePath}
+output: |
+  (complete file)
+>>END`;
+  }
+}
+
+/**
+ * Get file-type-specific rules to inject into the execute prompt.
+ * These are concise reminders appended to the userMessage in the pipeline.
+ */
+export function getFileTypeRules(filePath: string): string {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+
+  switch (ext) {
+    case "tsx":
+    case "jsx":
+      return "Rules: Inline styles (React style objects). Export default function component. Do NOT use import statements except React.\nEvery handler must do real work (NEVER use alert() or console.log() as the action). Every input must be controlled (value + onChange). Show visual feedback after user actions.";
+
+    case "html":
+    case "htm":
+      return "Rules: Complete HTML page with inline CSS and JS. Must include DOCTYPE, html, head, body tags.";
+
+    case "py":
+      return "Rules: Complete Python 3.10+ code with proper imports and error handling.";
+
+    case "ts":
+    case "js":
+      return "Rules: Modern ES6+ syntax. Export needed functions. Handle errors properly.";
+
+    case "md":
+    case "markdown":
+      return "Rules: Well-structured Markdown with clear headings, sections, and concrete details. No placeholder text.";
+
+    case "css":
+      return "Rules: Modern CSS with flexbox/grid. Mobile-friendly.";
+
+    case "json":
+      return "Rules: Valid, parseable JSON with proper indentation.";
+
+    default:
+      return "Rules: Complete, working file with no placeholder code.";
+  }
+}
+
+/**
+ * Check if a file type supports TDD (automated testing).
+ */
+export function supportsTDD(filePath: string): boolean {
+  const ext = filePath.split(".").pop()?.toLowerCase() || "";
+  return ["tsx", "jsx", "ts", "js"].includes(ext);
+}
+
+/**
+ * Run the Developer agent.
+ */
+export async function runDeveloper(
+  model: string,
+  userMessage: string,
+  filePath?: string,
+): Promise<{
+  block: ResultBlock | null;
+  raw: string;
+  prompt: string;
+  tokens: number;
+  durationMs: number;
+}> {
+  const systemPrompt = getSystemPrompt(filePath || "output.txt");
+
+  const { text, prompt, tokens, durationMs } = await callOllama(
+    model,
+    "developer",
+    systemPrompt,
+    userMessage,
+  );
+
+  const block = parseTTM(text);
+
+  if (block && block.command === "RESULT") {
+    return {
+      block: block as ResultBlock,
+      raw: text,
+      prompt,
+      tokens,
+      durationMs,
+    };
+  }
+
+  return { block: null, raw: text, prompt, tokens, durationMs };
+}

@@ -1,0 +1,68 @@
+:root {
+  --bg: #0e0e10;
+  --bg-card: #1a1a1e;
+  --bg-input: #252529;
+  --border: #333338;
+  --text: #e4e4e7;
+  --text-muted: #8b8b94;
+  --accent: #6366f1;
+  --accent-hover: #818cf8;
+  --success: #22c55e;
+  --warning: #eab308;
+  --danger: #ef4444;
+  --info: #3b82f6;
+  --radius: 8px;
+  --font-mono: "Geist Mono", ui-monospace, monospace;
+}
+
+* {
+  box-sizing: border-box;
+  padding: 0;
+  margin: 0;
+}
+
+html,
+body {
+  max-width: 100vw;
+  overflow-x: hidden;
+  color-scheme: dark;
+}
+
+body {
+  color: var(--text);
+  background: var(--bg);
+  font-family:
+    var(--font-geist-sans),
+    system-ui,
+    -apple-system,
+    sans-serif;
+  -webkit-font-smoothing: antialiased;
+  line-height: 1.5;
+}
+
+a {
+  color: var(--accent);
+  text-decoration: none;
+}
+a:hover {
+  color: var(--accent-hover);
+}
+
+button {
+  cursor: pointer;
+  border: none;
+  font-family: inherit;
+  font-size: inherit;
+}
+
+input,
+textarea,
+select {
+  font-family: inherit;
+  font-size: inherit;
+}
+
+code,
+pre {
+  font-family: var(--font-mono);
+}
