@@ -2208,7 +2208,7 @@ export class Pipeline {
   }
 
   // ─────────────────────────────────────────────
-  //  FEEDBACK PASS — User-driven iterative loop
+  //  FBK PASS — User-driven iterative loop
   // ─────────────────────────────────────────────
 
   /**
@@ -2218,7 +2218,7 @@ export class Pipeline {
   async runFeedbackPass(feedback: string) {
     const outDir = this.outputDir();
     if (!fs.existsSync(outDir)) {
-      await this.log("FEEDBACK", "No output files found — nothing to modify.");
+      await this.log("FBK", "No output files found — nothing to modify.");
       return;
     }
 
@@ -2239,14 +2239,14 @@ export class Pipeline {
 
     if (currentFiles.length === 0) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         "All output files are empty — run Execute first.",
       );
       return;
     }
 
     await this.log(
-      "FEEDBACK",
+      "FBK",
       `Processing feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
     );
 
@@ -2262,7 +2262,7 @@ PROJECT: ${this.projectName} — ${this.projectDescription}
 CURRENT FILES:
 ${fileList}
 
-USER FEEDBACK:
+USER FBK:
 ${feedback}
 
 Break this feedback into specific file changes. For each change, specify:
@@ -2288,14 +2288,14 @@ Only include changes that are relevant to the feedback. Be specific and actionab
 
     if (!analysisResult) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         "Failed to analyze feedback — LLM returned empty response.",
       );
       return;
     }
 
     await this.log(
-      "FEEDBACK",
+      "FBK",
       `Analysis complete`,
       undefined,
       analysisPrompt,
@@ -2327,13 +2327,13 @@ Only include changes that are relevant to the feedback. Be specific and actionab
 
     if (changes.length === 0) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         "Could not parse any actionable changes from feedback analysis.",
       );
       return;
     }
 
-    await this.log("FEEDBACK", `Found ${changes.length} change(s) to apply.`);
+    await this.log("FBK", `Found ${changes.length} change(s) to apply.`);
 
     // Apply each change through the Developer agent
     let applied = 0;
@@ -2342,12 +2342,12 @@ Only include changes that are relevant to the feedback. Be specific and actionab
 
       const existingContent = readFile(change.file);
       if (!existingContent || existingContent.trim().length < 10) {
-        await this.log("FEEDBACK", `Skipping ${change.file} — file is empty.`);
+        await this.log("FBK", `Skipping ${change.file} — file is empty.`);
         continue;
       }
 
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `Applying: [${change.file}] ${change.problem}`,
       );
 
@@ -2376,7 +2376,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
         if (validation.valid) {
           await this.writeOutputFile(change.file, repaired);
           await this.log(
-            "FEEDBACK",
+            "FBK",
             `Applied fix to ${change.file} (${devResult.tokens} tokens)`,
             undefined,
             devResult.prompt,
@@ -2385,7 +2385,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
           applied++;
         } else {
           await this.log(
-            "FEEDBACK",
+            "FBK",
             `Fix for ${change.file} failed validation: ${validation.reason} — keeping original`,
             undefined,
             devResult.prompt,
@@ -2394,7 +2394,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
         }
       } else {
         await this.log(
-          "FEEDBACK",
+          "FBK",
           `Could not apply fix to ${change.file} — Developer parse failure`,
           undefined,
           devResult.prompt,
@@ -2404,15 +2404,15 @@ Only include changes that are relevant to the feedback. Be specific and actionab
     }
 
     await this.log(
-      "FEEDBACK",
+      "FBK",
       `Applied ${applied}/${changes.length} change(s).`,
     );
 
     // Quick QA pass on the modified files
     if (applied > 0 && !this.aborted) {
-      await this.log("FEEDBACK", "Running quick QA pass on changes...");
+      await this.log("FBK", "Running quick QA pass on changes...");
       await this.runConsistencyCheck();
-      await this.log("FEEDBACK", "Feedback round complete.");
+      await this.log("FBK", "Feedback round complete.");
     }
   }
 

@@ -2898,7 +2898,7 @@ output: |
   }
 
   // ─────────────────────────────────────────────
-  //  FEEDBACK PASS — User-driven iterative loop
+  //  FBK PASS — User-driven iterative loop
   // ─────────────────────────────────────────────
 
   /**
@@ -2908,7 +2908,7 @@ output: |
   async runFeedbackPass(feedback: string) {
     const outDir = this.outputDir();
     if (!fs.existsSync(outDir)) {
-      await this.log("FEEDBACK", "No output files found — nothing to modify.");
+      await this.log("FBK", "No output files found — nothing to modify.");
       return;
     }
 
@@ -2917,7 +2917,7 @@ output: |
     const primaryPath = path.join(outDir, primaryFile);
     if (!fs.existsSync(primaryPath)) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `No ${primaryFile} found — nothing to modify.`,
       );
       return;
@@ -2926,27 +2926,27 @@ output: |
     const original = fs.readFileSync(primaryPath, "utf-8");
     if (original.trim().length === 0) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `${primaryFile} is empty — run Execute first.`,
       );
       return;
     }
 
     await this.log(
-      "FEEDBACK",
+      "FBK",
       `Processing feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
     );
 
     // Backup before modifying
     const backupPath = primaryPath + ".bak";
     fs.writeFileSync(backupPath, original, "utf-8");
-    await this.log("FEEDBACK", `Backed up ${primaryFile}`);
+    await this.log("FBK", `Backed up ${primaryFile}`);
 
     // Build a context-appropriate system prompt based on file type
     const ext = primaryFile.split(".").pop()?.toLowerCase() || "";
     const fileTypeRules = getFileTypeRules(primaryFile);
 
-    const FEEDBACK_SYSTEM_PROMPT = `Fix the issues in this file. Do NOT rewrite or replace it unless necessary.
+    const FBK_SYSTEM_PROMPT = `Fix the issues in this file. Do NOT rewrite or replace it unless necessary.
 Keep same structure and features. Only change what's requested.
 ${fileTypeRules}
 Output ONLY the file content. No comments in code. No explanations before or after.
@@ -2969,13 +2969,13 @@ output: |
       attempt++
     ) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `Attempt ${attempt}/${Pipeline.MAX_SELF_HEAL_ATTEMPTS}...`,
       );
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
       userMessage += `EXISTING ${primaryFile} (edit this, do NOT replace):\n${this.truncateForPrompt(currentContent, 100)}\n\n`;
-      userMessage += `USER FEEDBACK: "${feedback}"\n\n`;
+      userMessage += `USER FBK: "${feedback}"\n\n`;
       userMessage += `Output the COMPLETE corrected ${primaryFile}.`;
 
       userMessage = this.withCustomInstructions(userMessage);
@@ -2983,7 +2983,7 @@ output: |
       const result = await callOllamaFn(
         this.model,
         "feedback",
-        FEEDBACK_SYSTEM_PROMPT,
+        FBK_SYSTEM_PROMPT,
         userMessage,
       );
 
@@ -2993,7 +2993,7 @@ output: |
 
       if (!block) {
         await this.log(
-          "FEEDBACK",
+          "FBK",
           `Attempt ${attempt}: parse failure — retrying`,
           undefined,
           result.prompt,
@@ -3004,7 +3004,7 @@ output: |
 
       const { repaired, fixes } = autoRepairOutput(block.output, primaryFile);
       if (fixes.length > 0) {
-        await this.log("FEEDBACK", `Auto-repaired: ${fixes.join(", ")}`);
+        await this.log("FBK", `Auto-repaired: ${fixes.join(", ")}`);
       }
 
       const validation = validateOutput(repaired, primaryFile);
@@ -3013,7 +3013,7 @@ output: |
         currentContent = repaired;
         applied = true;
         await this.log(
-          "FEEDBACK",
+          "FBK",
           `Applied feedback (${result.tokens} tokens)`,
           undefined,
           result.prompt,
@@ -3024,7 +3024,7 @@ output: |
 
       // Validation failed — feed the error back for the next attempt
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `Attempt ${attempt} failed: ${validation.reason}`,
         undefined,
         result.prompt,
@@ -3037,7 +3037,7 @@ output: |
       // All attempts failed — restore backup
       fs.writeFileSync(primaryPath, original, "utf-8");
       await this.log(
-        "FEEDBACK",
+        "FBK",
         "All attempts failed — restored original file",
       );
     }
@@ -3047,7 +3047,7 @@ output: |
       fs.unlinkSync(backupPath);
     }
 
-    await this.log("FEEDBACK", "Feedback pass complete");
+    await this.log("FBK", "Feedback pass complete");
   }
 
   /** Map an LLM-returned filename to the closest manifest file */

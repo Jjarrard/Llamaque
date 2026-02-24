@@ -2236,7 +2236,7 @@ output: |
   }
 
   // ─────────────────────────────────────────────
-  //  FEEDBACK PASS — User-driven iterative loop
+  //  FBK PASS — User-driven iterative loop
   // ─────────────────────────────────────────────
 
   /**
@@ -2246,33 +2246,33 @@ output: |
   async runFeedbackPass(feedback: string) {
     const outDir = this.outputDir();
     if (!fs.existsSync(outDir)) {
-      await this.log("FEEDBACK", "No output files found — nothing to modify.");
+      await this.log("FBK", "No output files found — nothing to modify.");
       return;
     }
 
     const componentPath = path.join(outDir, "Component.tsx");
     if (!fs.existsSync(componentPath)) {
-      await this.log("FEEDBACK", "No Component.tsx found — nothing to modify.");
+      await this.log("FBK", "No Component.tsx found — nothing to modify.");
       return;
     }
 
     const original = fs.readFileSync(componentPath, "utf-8");
     if (original.trim().length === 0) {
-      await this.log("FEEDBACK", "Component.tsx is empty — run Execute first.");
+      await this.log("FBK", "Component.tsx is empty — run Execute first.");
       return;
     }
 
     await this.log(
-      "FEEDBACK",
+      "FBK",
       `Processing feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
     );
 
     // Backup before modifying
     const backupPath = componentPath + ".bak";
     fs.writeFileSync(backupPath, original, "utf-8");
-    await this.log("FEEDBACK", "Backed up Component.tsx");
+    await this.log("FBK", "Backed up Component.tsx");
 
-    const FEEDBACK_SYSTEM_PROMPT = `Fix the issues in this React component. Do NOT rewrite or replace it.
+    const FBK_SYSTEM_PROMPT = `Fix the issues in this React component. Do NOT rewrite or replace it.
 Keep same name, structure, features. Only change what's broken.
 Must have: export default function, return with JSX, inline styles.
 All handlers must do real work (no alert placeholders). All inputs must be controlled.
@@ -2296,13 +2296,13 @@ output: |
       attempt++
     ) {
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `Attempt ${attempt}/${Pipeline.MAX_SELF_HEAL_ATTEMPTS}...`,
       );
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
       userMessage += `EXISTING Component.tsx (edit this, do NOT replace):\n${this.truncateForPrompt(currentContent, 100)}\n\n`;
-      userMessage += `USER FEEDBACK: "${feedback}"\n\n`;
+      userMessage += `USER FBK: "${feedback}"\n\n`;
       userMessage += `Output the COMPLETE corrected Component.tsx.`;
 
       userMessage = this.withCustomInstructions(userMessage);
@@ -2310,7 +2310,7 @@ output: |
       const result = await callOllamaFn(
         this.model,
         "feedback",
-        FEEDBACK_SYSTEM_PROMPT,
+        FBK_SYSTEM_PROMPT,
         userMessage,
       );
 
@@ -2320,7 +2320,7 @@ output: |
 
       if (!block) {
         await this.log(
-          "FEEDBACK",
+          "FBK",
           `Attempt ${attempt}: parse failure — retrying`,
           undefined,
           result.prompt,
@@ -2334,7 +2334,7 @@ output: |
         "Component.tsx",
       );
       if (fixes.length > 0) {
-        await this.log("FEEDBACK", `Auto-repaired: ${fixes.join(", ")}`);
+        await this.log("FBK", `Auto-repaired: ${fixes.join(", ")}`);
       }
 
       const validation = validateOutput(repaired, "Component.tsx");
@@ -2343,7 +2343,7 @@ output: |
         currentContent = repaired;
         applied = true;
         await this.log(
-          "FEEDBACK",
+          "FBK",
           `Applied feedback (${result.tokens} tokens)`,
           undefined,
           result.prompt,
@@ -2354,7 +2354,7 @@ output: |
 
       // Validation failed — feed the error back for the next attempt
       await this.log(
-        "FEEDBACK",
+        "FBK",
         `Attempt ${attempt} failed: ${validation.reason}`,
         undefined,
         result.prompt,
@@ -2367,7 +2367,7 @@ output: |
       // All attempts failed — restore backup
       fs.writeFileSync(componentPath, original, "utf-8");
       await this.log(
-        "FEEDBACK",
+        "FBK",
         "All attempts failed — restored original component",
       );
     }
@@ -2377,7 +2377,7 @@ output: |
       fs.unlinkSync(backupPath);
     }
 
-    await this.log("FEEDBACK", "Feedback pass complete");
+    await this.log("FBK", "Feedback pass complete");
   }
 
   /** Map an LLM-returned filename to Component.tsx */
