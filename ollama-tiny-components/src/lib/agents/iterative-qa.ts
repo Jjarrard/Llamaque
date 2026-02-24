@@ -1,23 +1,23 @@
 import { callOllama } from "@/lib/ollama";
 
-const SYSTEM_PROMPT = `You are a QA tester inspecting a web app file. Find exactly ONE bug, mistake, or quality issue.
+const SYSTEM_PROMPT = `You are a QA tester inspecting a React TSX component. Find exactly ONE bug, mistake, or quality issue.
 
 Look for (in priority order):
-1. Elements in the wrong place (e.g. list inside a form, buttons outside the main container)
+1. JSX elements in the wrong place (e.g. list inside a form, elements outside the main container)
 2. Missing functionality that was requested but not implemented
-3. Broken HTML structure (unclosed tags, wrong nesting)
-4. CSS not styling elements that exist in the HTML (missing selectors)
-5. CSS layout problems (no centering, no spacing, elements overlapping)
-6. JS referencing IDs or classes that don't exist in the HTML
-7. Missing hover/focus states on interactive elements
-8. Placeholder code that was never implemented
+3. Missing or broken inline styles (no centering, no spacing, elements overlapping)
+4. Event handlers not wired up or referencing wrong state
+5. Missing hover/focus states on interactive elements (use onMouseEnter/onMouseLeave with state)
+6. Placeholder code that was never implemented
+7. Missing default export or incorrect component structure
+8. State management issues (missing useState, stale closures)
 
 Report ONLY ONE issue — the most important one.
-If the file looks correct and complete, reply: NO_ISSUES
+If the component looks correct and complete, reply: NO_ISSUES
 
 Reply in this EXACT format:
 >>ISSUE
-file: (filename)
+file: Component.tsx
 problem: (one sentence describing the specific problem)
 fix: (one sentence describing exactly what to change)
 >>END`;

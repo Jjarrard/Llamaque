@@ -206,7 +206,7 @@ export default function Home() {
                 <>
                   <a
                     className={styles.cardBtn}
-                    href={`/api/projects/${p.id}/output?file=index.html`}
+                    href={`/api/projects/${p.id}/output?file=Component.tsx`}
                     target="_blank"
                     rel="noopener noreferrer"
                     onClick={(e) => e.stopPropagation()}

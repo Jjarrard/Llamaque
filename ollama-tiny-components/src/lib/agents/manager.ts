@@ -2,27 +2,28 @@ import { callOllama } from "@/lib/ollama";
 import { parseTTM, BreakdownBlock, ReadyBlock } from "@/lib/protocol";
 
 /**
- * Manager agent — breaks epics into 2-3 file-targeted features.
+ * Manager agent — breaks epics into 2-3 component features.
  *
  * In the new 2-depth architecture, Manager is only called at depth 1 (Epic → Feature).
  * Depth-2 tasks are automatically marked READY by the pipeline.
+ * All features target the single Component.tsx file.
  */
-const SYSTEM_PROMPT = `You are a Task Manager. The project has exactly 3 files: index.html, script.js, style.css.
+const SYSTEM_PROMPT = `You are a Task Manager. The project outputs a single React TSX component file (Component.tsx) with inline styles.
 
-Break this epic into 2-3 features. Each feature targets ONE specific file.
-End each feature description with "in index.html", "in script.js", or "in style.css".
+Break this epic into 2-3 features for the Component.tsx file.
+Each feature should describe a concrete coding task for the React component.
 
 Rules:
 - Features must directly relate to the epic — do NOT add unrelated features
 - Each feature should describe a concrete coding task, not a vague goal
-- Keep features focused: one file per feature
+- All features target Component.tsx (the only output file)
+- Think in terms of React: state, event handlers, JSX structure, inline styles
 - You MUST reply with >>BREAKDOWN — never use >>READY for an epic
 
 Reply EXACTLY:
 >>BREAKDOWN
-- task: "[specific work for this epic] in index.html"
-- task: "[specific work for this epic] in style.css"
-- task: "[specific work for this epic] in script.js"
+- task: "[specific React component work for this epic]"
+- task: "[specific React component work for this epic]"
 >>END`;
 
 export async function runManager(

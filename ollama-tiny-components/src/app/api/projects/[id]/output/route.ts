@@ -6,11 +6,16 @@ const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
   ".css": "text/css",
   ".js": "application/javascript",
+  ".tsx": "text/plain",
+  ".ts": "text/plain",
 };
 
 /**
- * GET /api/projects/[id]/output?file=index.html
- * Serves a file from the project's output directory.
+ * GET /api/projects/[id]/output?file=Component.tsx
+ * Serves the project's Component.tsx file.
+ *
+ * For TSX files, wraps the component in an HTML page with React CDN + Babel
+ * standalone for in-browser rendering (no build step needed).
  */
 export async function GET(
   request: NextRequest,
@@ -40,24 +45,46 @@ export async function GET(
 
   const content = fs.readFileSync(filePath, "utf-8");
   const ext = path.extname(file).toLowerCase();
-  const contentType = MIME_TYPES[ext] || "text/plain";
 
-  // For HTML files, rewrite relative CSS/JS links to go through this same API
-  if (ext === ".html") {
-    const rewritten = content
-      .replace(
-        /href="style\.css"/g,
-        `href="/api/projects/${id}/output?file=style.css"`,
-      )
-      .replace(
-        /src="script\.js"/g,
-        `src="/api/projects/${id}/output?file=script.js"`,
-      );
-    return new NextResponse(rewritten, {
-      headers: { "Content-Type": contentType },
+  // For TSX files, generate a preview HTML that loads React CDN + Babel standalone
+  if (ext === ".tsx" || ext === ".jsx") {
+    // Strip import statements (React is provided via CDN globals)
+    const componentCode = content
+      .replace(/^\s*import\s+.*?from\s+["']react["'];?\s*$/gm, "")
+      .replace(/^\s*import\s+React[\s,{].*?;?\s*$/gm, "");
+
+    const previewHtml = `<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Component Preview</title>
+  <script src="https://unpkg.com/react@18/umd/react.development.js" crossorigin></script>
+  <script src="https://unpkg.com/react-dom@18/umd/react-dom.development.js" crossorigin></script>
+  <script src="https://unpkg.com/@babel/standalone/babel.min.js"></script>
+  <style>
+    * { margin: 0; padding: 0; box-sizing: border-box; }
+  </style>
+</head>
+<body>
+  <div id="root"></div>
+  <script type="text/babel" data-type="module">
+    const { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext, createContext, Fragment } = React;
+
+    ${componentCode}
+
+    const root = ReactDOM.createRoot(document.getElementById("root"));
+    root.render(React.createElement(typeof Component !== "undefined" ? Component : (typeof App !== "undefined" ? App : () => React.createElement("div", null, "No component found"))));
+  </script>
+</body>
+</html>`;
+
+    return new NextResponse(previewHtml, {
+      headers: { "Content-Type": "text/html" },
     });
   }
 
+  const contentType = MIME_TYPES[ext] || "text/plain";
   return new NextResponse(content, {
     headers: { "Content-Type": contentType },
   });

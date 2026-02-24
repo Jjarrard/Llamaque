@@ -902,7 +902,7 @@ export default function ProjectPage() {
               </button>
               <a
                 className={styles.actionUtility}
-                href={`/api/projects/${projectId}/output?file=index.html`}
+                href={`/api/projects/${projectId}/output?file=Component.tsx`}
                 target="_blank"
                 rel="noopener noreferrer"
                 title="Open in new tab"
@@ -1095,7 +1095,7 @@ export default function ProjectPage() {
           <iframe
             key={previewKey}
             className={styles.previewIframe}
-            src={`/api/projects/${projectId}/output?file=index.html`}
+            src={`/api/projects/${projectId}/output?file=Component.tsx`}
             title="Project Preview"
             sandbox="allow-scripts allow-same-origin"
           />

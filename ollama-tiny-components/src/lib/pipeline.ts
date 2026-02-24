@@ -1,17 +1,18 @@
 /**
- * Pipeline Orchestrator — Spec-Based Execution
+ * Pipeline Orchestrator — React Component Generation
  *
  * Phases:
  *   1. DECOMPOSE — PM breaks idea into 3-5 epics
- *   2. PLAN — Manager breaks each epic into 2-3 file-targeted features
- *   3. MERGE — Programmatic: group features by file, deduplicate, cap at 8
- *   4. EXECUTE — Sequential: one requirement at a time per file (HTML → CSS → JS)
+ *   2. PLAN — Manager breaks each epic into 2-3 component features
+ *   3. MERGE — Programmatic: group features, deduplicate, cap at 8
+ *   4. EXECUTE — Sequential: one requirement at a time for Component.tsx
  *   5. REVIEW — Programmatic quality checks + LLM holistic review
  *   6. ITERATIVE QA — Find one bug → fix → repeat (up to 5 rounds)
- *   7. IMPROVE — Improver reviews all files for remaining bugs
- *   8. CONSISTENCY — Programmatic cross-file validation + auto-fix
+ *   7. IMPROVE — Improver reviews component for remaining bugs
+ *   8. CONSISTENCY — Programmatic validation + auto-fix
  *
- * The HTML file IS the contract: CSS and JS get full HTML context.
+ * Output is a single React TSX component with inline styles.
+ * No build step — preview uses React CDN + Babel standalone.
  */
 
 import { db } from "@/db";
@@ -44,22 +45,20 @@ const MAX_RETRIES = 2;
 const MAX_PARSE_RETRIES = 2;
 /** Max bullet points per file spec — keeps Developer prompt short */
 const MAX_REQUIREMENTS = 8;
-/** Smaller caps per file to reduce overload on small models */
+/** Caps per file to reduce overload on small models */
 const FILE_REQUIREMENT_CAP: Record<string, number> = {
-  "index.html": 5,
-  "style.css": 4,
-  "script.js": 3,
+  "Component.tsx": 8,
 };
 /** Max features the Manager can produce per epic */
 const MAX_SUBTASKS = 3;
 /** Max epics from PM */
 const MAX_EPICS = 5;
 
-/** The 3 fixed project files — no others are created */
-const TEMPLATE_FILES = ["index.html", "style.css", "script.js"] as const;
+/** The single output component file */
+const TEMPLATE_FILES = ["Component.tsx"] as const;
 
-/** File write order — HTML first so CSS/JS can reference its selectors */
-const FILE_ORDER = ["index.html", "style.css", "script.js"] as const;
+/** File write order — single component */
+const FILE_ORDER = ["Component.tsx"] as const;
 
 export type PipelineStage =
   | "all"
@@ -161,106 +160,34 @@ export class Pipeline {
       fs.mkdirSync(outDir, { recursive: true });
     }
 
-    const html = `<!DOCTYPE html>
-<html lang="en">
-<head>
-  <meta charset="UTF-8">
-  <meta name="viewport" content="width=device-width, initial-scale=1.0">
-  <title>${this.projectName}</title>
-  <link rel="stylesheet" href="style.css">
-</head>
-<body>
+    const component = `import React from "react";
 
-  <script src="script.js"></script>
-</body>
-</html>`;
+export default function Component() {
+  return (
+    <div style={{ fontFamily: "sans-serif", padding: "2rem" }}>
+      <h1>${this.projectName}</h1>
+    </div>
+  );
+}
+`;
 
-    const css = `/* style.css */\n`;
-    const js = `// script.js\n`;
+    fs.writeFileSync(path.join(outDir, "Component.tsx"), component, "utf-8");
 
-    fs.writeFileSync(path.join(outDir, "index.html"), html, "utf-8");
-    fs.writeFileSync(path.join(outDir, "style.css"), css, "utf-8");
-    fs.writeFileSync(path.join(outDir, "script.js"), js, "utf-8");
-
-    await this.log("SYS", "Created scaffold: index.html, style.css, script.js");
+    await this.log("SYS", "Created scaffold: Component.tsx");
   }
 
   // ─────────────────────────────────────────────
   //  FILE PATH RESOLUTION
   // ─────────────────────────────────────────────
 
+  /**
+   * All features resolve to the single Component.tsx file.
+   */
   private resolveFilePath(
     filePath: string | null,
     description: string,
   ): string {
-    if (
-      filePath &&
-      TEMPLATE_FILES.includes(filePath as (typeof TEMPLATE_FILES)[number])
-    ) {
-      return filePath;
-    }
-
-    if (filePath) {
-      const ext = path.extname(filePath).toLowerCase();
-      if (ext === ".html" || ext === ".htm") return "index.html";
-      if (ext === ".css") return "style.css";
-      if (ext === ".js") return "script.js";
-    }
-
-    const desc = description.toLowerCase();
-
-    // CSS keywords
-    if (
-      desc.includes("style") ||
-      desc.includes("css") ||
-      desc.includes("color") ||
-      desc.includes("font") ||
-      desc.includes("grid") ||
-      desc.includes("design") ||
-      desc.includes("theme") ||
-      desc.includes("responsive") ||
-      desc.includes("animation") ||
-      desc.includes("hover") ||
-      desc.includes("transition") ||
-      desc.includes("flexbox") ||
-      desc.includes("margin") ||
-      desc.includes("padding") ||
-      desc.includes("background") ||
-      desc.includes("border")
-    ) {
-      return "style.css";
-    }
-
-    // JS keywords
-    if (
-      desc.includes("script") ||
-      desc.includes(".js") ||
-      desc.includes("javascript") ||
-      desc.includes("click") ||
-      desc.includes("event") ||
-      desc.includes("function") ||
-      desc.includes("logic") ||
-      desc.includes("handler") ||
-      desc.includes("listener") ||
-      desc.includes("calculate") ||
-      desc.includes("button action") ||
-      desc.includes("counter") ||
-      desc.includes("score") ||
-      desc.includes("timer") ||
-      desc.includes("game mechanic") ||
-      desc.includes("interact") ||
-      desc.includes("toggle") ||
-      desc.includes("validate") ||
-      desc.includes("submit") ||
-      desc.includes("fetch") ||
-      desc.includes("api") ||
-      desc.includes("localstorage") ||
-      desc.includes("dynamic")
-    ) {
-      return "script.js";
-    }
-
-    return "index.html";
+    return "Component.tsx";
   }
 
   // ─────────────────────────────────────────────
@@ -621,7 +548,7 @@ export class Pipeline {
       );
       result = await runManager(
         this.model,
-        `${task.description}\nThis is a high-level epic. You MUST break it into 2-3 smaller features that target specific files (index.html, style.css, or script.js). Reply with >>BREAKDOWN only.`,
+        `${task.description}\nThis is a high-level epic. You MUST break it into 2-3 smaller features for a React TSX component. Each feature should describe a specific UI element, behavior, or styling to add. Reply with >>BREAKDOWN only.`,
         `Project: ${this.projectName} — ${this.projectDescription}`,
       );
       if (!result.block || result.block.command !== "BREAKDOWN") {
@@ -650,7 +577,7 @@ export class Pipeline {
         await this.log("MGR", "All subtasks rejected, retrying...", task.id);
         const retryResult = await runManager(
           this.model,
-          `${task.description}\nIMPORTANT: Break into DIFFERENT, SPECIFIC steps. Each must target one file (index.html, style.css, or script.js). Each must be a concrete coding action.`,
+          `${task.description}\nIMPORTANT: Break into DIFFERENT, SPECIFIC steps. Each must be a concrete feature for a React TSX component (UI elements, event handlers, or inline styles). Each must be a concrete coding action.`,
           `Project: ${this.projectName} — ${this.projectDescription}`,
         );
         if (retryResult.block && retryResult.block.command === "BREAKDOWN") {
@@ -764,159 +691,57 @@ export class Pipeline {
   }
 
   /**
-   * If CSS or JS have no features, generate a default spec.
-   * Prevents the common issue where LLMs forget to generate CSS features.
+   * If Component.tsx has no features, generate a default spec.
    */
   private ensureBasicSpecs(
     fileSpecs: Record<string, { requirements: string[]; tasks: Task[] }>,
     fileGroups: Record<string, Task[]>,
   ) {
-    // Collect all tasks for fallback assignment
     const allTasks = Object.values(fileGroups).flat();
-    const fallbackTasks = fileGroups["index.html"] || allTasks.slice(0, 1);
+    const fallbackTasks = fileGroups["Component.tsx"] || allTasks.slice(0, 1);
 
-    // If no HTML spec, ALWAYS add one — HTML is the foundation
     if (
-      !fileSpecs["index.html"] ||
-      fileSpecs["index.html"].requirements.length === 0
+      !fileSpecs["Component.tsx"] ||
+      fileSpecs["Component.tsx"].requirements.length === 0
     ) {
-      // Build HTML requirements from ALL features across all files
-      const allRequirements = Object.values(fileSpecs)
-        .flatMap((s) => s.requirements)
-        .slice(0, 5);
-      const htmlReqs = [
-        `Build the complete HTML structure for "${this.projectName}"`,
-        "Give every interactive element (buttons, inputs, lists) a unique id attribute",
-        "Include semantic HTML5 structure with proper headings and sections",
+      const componentReqs = [
+        `Build a complete React component for "${this.projectName}: ${this.projectDescription}"`,
+        "Use React.useState for all interactive state management",
+        "Use inline styles (style={{ ... }}) for all styling — modern, clean design",
+        "Include all UI elements: buttons, inputs, lists as needed for the features",
       ];
-      // Add context from other specs so HTML knows what elements are needed
-      if (allRequirements.length > 0) {
-        htmlReqs.push(
-          `The app needs these features (build HTML elements for them): ${allRequirements.join("; ")}`,
+
+      const descLower = this.projectDescription.toLowerCase();
+      if (
+        descLower.includes("list") ||
+        descLower.includes("item") ||
+        descLower.includes("task")
+      ) {
+        componentReqs.push(
+          "Render items in a styled list with add/remove functionality",
         );
       }
-      fileSpecs["index.html"] = {
-        requirements: htmlReqs,
+      if (
+        descLower.includes("form") ||
+        descLower.includes("input") ||
+        descLower.includes("add")
+      ) {
+        componentReqs.push(
+          "Include a form with controlled inputs for adding data",
+        );
+      }
+
+      fileSpecs["Component.tsx"] = {
+        requirements: componentReqs.slice(
+          0,
+          FILE_REQUIREMENT_CAP["Component.tsx"] ?? MAX_REQUIREMENTS,
+        ),
         tasks: fallbackTasks,
       };
       this.log(
         "SYS",
-        "Added default HTML spec (no HTML features were generated)",
+        "Added default Component.tsx spec (no features were generated)",
       );
-    }
-
-    // If no CSS spec, add styling requirements that reference the project's features
-    if (
-      !fileSpecs["style.css"] ||
-      fileSpecs["style.css"].requirements.length === 0
-    ) {
-      const allFeatures = Object.values(fileSpecs)
-        .flatMap((s) => s.requirements)
-        .join(" ")
-        .toLowerCase();
-      const cssReqs = [
-        `Add clean, modern CSS styling appropriate for "${this.projectName}"`,
-        "Style the body with a centered layout, readable font, and background color",
-        "Style all buttons with padding, border-radius, hover effects, and cursor pointer",
-      ];
-      if (
-        allFeatures.includes("list") ||
-        allFeatures.includes("item") ||
-        allFeatures.includes("task")
-      ) {
-        cssReqs.push(
-          "Style list items with padding, borders, and hover effects",
-        );
-      }
-      if (
-        allFeatures.includes("complete") ||
-        allFeatures.includes("done") ||
-        allFeatures.includes("toggle")
-      ) {
-        cssReqs.push(
-          "Style completed items with line-through text and reduced opacity",
-        );
-      }
-      if (
-        allFeatures.includes("form") ||
-        allFeatures.includes("input") ||
-        allFeatures.includes("add")
-      ) {
-        cssReqs.push(
-          "Style the form with flexbox layout and input with focus state",
-        );
-      }
-      fileSpecs["style.css"] = {
-        requirements: cssReqs.slice(0, FILE_REQUIREMENT_CAP["style.css"] ?? 4),
-        tasks: fallbackTasks,
-      };
-      this.log(
-        "SYS",
-        "Added default CSS spec (no CSS features were generated)",
-      );
-    }
-
-    // If no JS spec but project needs interactivity, add basic requirement
-    const descLower = this.projectDescription.toLowerCase();
-    const needsJS =
-      descLower.includes("click") ||
-      descLower.includes("button") ||
-      descLower.includes("counter") ||
-      descLower.includes("game") ||
-      descLower.includes("calculator") ||
-      descLower.includes("todo") ||
-      descLower.includes("interactive") ||
-      descLower.includes("timer") ||
-      descLower.includes("form") ||
-      descLower.includes("score") ||
-      descLower.includes("list") ||
-      descLower.includes("app");
-
-    if (
-      needsJS &&
-      (!fileSpecs["script.js"] ||
-        fileSpecs["script.js"].requirements.length === 0)
-    ) {
-      // Build JS requirements from the project description
-      const jsReqs: string[] = [
-        `Implement the core JavaScript logic for "${this.projectName}: ${this.projectDescription}"`,
-      ];
-
-      if (
-        descLower.includes("add") ||
-        descLower.includes("create") ||
-        descLower.includes("new")
-      ) {
-        jsReqs.push(
-          "Handle form submission to add new items to the list and render them",
-        );
-      }
-      if (
-        descLower.includes("delete") ||
-        descLower.includes("remove") ||
-        descLower.includes("clear")
-      ) {
-        jsReqs.push("Allow users to remove items from the list");
-      }
-      if (
-        descLower.includes("complete") ||
-        descLower.includes("toggle") ||
-        descLower.includes("done") ||
-        descLower.includes("check")
-      ) {
-        jsReqs.push("Toggle items as completed/active with visual feedback");
-      }
-
-      if (jsReqs.length === 1) {
-        jsReqs.push("Query interactive elements by ID and add event listeners");
-        jsReqs.push("Update the DOM to reflect state changes");
-      }
-
-      fileSpecs["script.js"] = {
-        requirements: jsReqs.slice(0, FILE_REQUIREMENT_CAP["script.js"] ?? 3),
-        tasks: fallbackTasks,
-      };
-      this.log("SYS", "Added default JS spec (no JS features were generated)");
     }
   }
 
@@ -947,9 +772,12 @@ export class Pipeline {
         if (isDuplicate) continue;
 
         seenNormalized.add(key);
-        // Strip trailing "in index.html" / "in style.css" / "in script.js"
+        // Strip trailing "in Component.tsx" or old-style file references
         const cleaned = task.description
-          .replace(/\s+in\s+(index\.html|style\.css|script\.js)\s*$/i, "")
+          .replace(
+            /\s+in\s+(Component\.tsx|index\.html|style\.css|script\.js)\s*$/i,
+            "",
+          )
           .trim();
         requirements.push(cleaned);
       }
@@ -1038,18 +866,7 @@ export class Pipeline {
       const currentContent = this.getCurrentFileContent(filePath) || "";
       const hasContent = currentContent.trim().length > 50;
 
-      // Re-read HTML/CSS context each step (HTML may have been updated)
-      const htmlContext = this.getHTMLContext(filePath);
-      const cssContext = this.getCSSContext(filePath);
-
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-
-      if (htmlContext) {
-        userMessage += `The HTML file:\n${htmlContext}\n\n`;
-      }
-      if (cssContext) {
-        userMessage += `The CSS file:\n${cssContext}\n\n`;
-      }
 
       if (hasContent) {
         userMessage += `Current ${filePath}:\n\`\`\`\n${this.truncateForPrompt(currentContent, 160)}\n\`\`\`\n\n`;
@@ -1058,15 +875,9 @@ export class Pipeline {
         userMessage += `Write the complete ${filePath} file implementing this feature:\n- ${req}`;
       }
 
-      // File-specific rules
-      if (filePath === "script.js") {
-        userMessage +=
-          "\n\nDeclare each variable/function EXACTLY ONCE. No duplicates. Keep all existing functions.";
-      }
-      if (filePath === "style.css") {
-        userMessage +=
-          "\n\nKeep ALL existing CSS rules. Only add new rules for the requested feature.";
-      }
+      // TSX-specific rules
+      userMessage +=
+        "\n\nUse inline styles (React style objects). Export a default function component. Do NOT use import statements except React.";
 
       // Include QA feedback from previous retry — only on first step
       if (i === 0 && qaReason) {
@@ -1223,32 +1034,14 @@ export class Pipeline {
     return taskGroup.slice(start, start + count);
   }
 
-  private getHTMLContext(targetFile: string): string | null {
-    if (targetFile === "index.html") return null;
-
-    const htmlPath = path.join(this.outputDir(), "index.html");
-    if (!fs.existsSync(htmlPath)) return null;
-
-    const html = fs.readFileSync(htmlPath, "utf-8");
-    if (html.trim().length < 50) return null;
-
-    return html;
+  private getHTMLContext(_targetFile: string): string | null {
+    // Single-file model — no separate HTML context
+    return null;
   }
 
-  private getCSSContext(targetFile: string): string | null {
-    if (targetFile !== "script.js") return null;
-
-    const cssPath = path.join(this.outputDir(), "style.css");
-    if (!fs.existsSync(cssPath)) return null;
-
-    const css = fs.readFileSync(cssPath, "utf-8");
-    if (css.trim().length < 20) return null;
-
-    const lines = css.split("\n");
-    if (lines.length > 60) {
-      return lines.slice(0, 60).join("\n") + "\n/* ... */";
-    }
-    return css;
+  private getCSSContext(_targetFile: string): string | null {
+    // Single-file model — no separate CSS context
+    return null;
   }
 
   private async applyDeterministicOpsPrepass(
@@ -1295,15 +1088,14 @@ export class Pipeline {
 
   private readFileBundle(): FileBundle {
     const outDir = this.outputDir();
-    const read = (name: string) => {
-      const fullPath = path.join(outDir, name);
-      if (!fs.existsSync(fullPath)) return "";
-      return fs.readFileSync(fullPath, "utf-8");
-    };
+    const fullPath = path.join(outDir, "Component.tsx");
+    const content = fs.existsSync(fullPath)
+      ? fs.readFileSync(fullPath, "utf-8")
+      : "";
     return {
-      html: read("index.html"),
-      css: read("style.css"),
-      js: read("script.js"),
+      html: "",
+      css: "",
+      js: content,
     };
   }
 
@@ -1312,9 +1104,8 @@ export class Pipeline {
     if (!fs.existsSync(outDir)) {
       fs.mkdirSync(outDir, { recursive: true });
     }
-    fs.writeFileSync(path.join(outDir, "index.html"), bundle.html, "utf-8");
-    fs.writeFileSync(path.join(outDir, "style.css"), bundle.css, "utf-8");
-    fs.writeFileSync(path.join(outDir, "script.js"), bundle.js, "utf-8");
+    // Write TSX content (stored in js field of bundle)
+    fs.writeFileSync(path.join(outDir, "Component.tsx"), bundle.js, "utf-8");
   }
 
   private getCurrentFileContent(filePath: string): string | null {
@@ -1360,49 +1151,6 @@ export class Pipeline {
     let finalOutput = repaired;
     let result = validateOutput(finalOutput, filePath);
 
-    // Targeted repair pass for common JS failure mode on small models
-    if (
-      filePath === "script.js" &&
-      !result.valid &&
-      (result.reason || "").toLowerCase().includes("duplicate declarations")
-    ) {
-      const deduped = this.removeDuplicateJsDeclarations(finalOutput);
-      if (deduped !== finalOutput) {
-        const dedupeValidation = validateOutput(deduped, filePath);
-        if (dedupeValidation.valid) {
-          finalOutput = deduped;
-          result = dedupeValidation;
-          await this.writeOutputFile(filePath, finalOutput);
-          for (const task of taskGroup) {
-            await db
-              .update(tasks)
-              .set({ output: finalOutput })
-              .where(eq(tasks.id, task.id));
-          }
-          await this.log(
-            "QA",
-            "Auto-repaired duplicate JavaScript declarations",
-            taskGroup[0].id,
-          );
-        }
-      }
-    }
-
-    // Soft cross-file check (warning only)
-    if (
-      result.valid &&
-      (filePath === "style.css" || filePath === "script.js")
-    ) {
-      const crossFileResult = this.validateCrossFileRefs(filePath, finalOutput);
-      if (!crossFileResult.valid) {
-        await this.log(
-          "QA",
-          `WARN: ${crossFileResult.reason}`,
-          taskGroup[0].id,
-        );
-      }
-    }
-
     if (result.valid) {
       await this.log("QA", `PASS: ${filePath}`, taskGroup[0].id);
       for (const task of taskGroup) {
@@ -1435,74 +1183,6 @@ export class Pipeline {
             await this.log(
               "QA",
               `Using deterministic fallback for instruction-dump failure in ${filePath}`,
-              firstTask.id,
-            );
-            for (const task of taskGroup) {
-              await this.completeTask(task);
-            }
-            return;
-          }
-        }
-      }
-
-      const isCssBraceFailure =
-        filePath === "style.css" &&
-        (result.reason || "").toLowerCase().includes("braces");
-
-      if (isCssBraceFailure) {
-        const deterministicFallback = this.deterministicDraftByFile[filePath];
-        if (deterministicFallback) {
-          const fallbackResult = validateOutput(
-            deterministicFallback,
-            filePath,
-            { allowScaffold: true },
-          );
-          if (fallbackResult.valid) {
-            await this.writeOutputFile(filePath, deterministicFallback);
-            for (const task of taskGroup) {
-              await db
-                .update(tasks)
-                .set({ output: deterministicFallback })
-                .where(eq(tasks.id, task.id));
-            }
-            await this.log(
-              "QA",
-              "Using deterministic fallback for CSS brace failure",
-              firstTask.id,
-            );
-            for (const task of taskGroup) {
-              await this.completeTask(task);
-            }
-            return;
-          }
-        }
-      }
-
-      const isJsDuplicateFailure =
-        filePath === "script.js" &&
-        (result.reason || "").toLowerCase().includes("duplicate declarations");
-
-      // Early fallback for weak-model JS duplicate loops: after first failed retry,
-      // prefer deterministic draft if valid rather than burning more model attempts.
-      if (isJsDuplicateFailure && firstTask.retryCount >= 1) {
-        const deterministicFallback = this.deterministicDraftByFile[filePath];
-        if (deterministicFallback) {
-          const fallbackResult = validateOutput(
-            deterministicFallback,
-            filePath,
-            { allowScaffold: true },
-          );
-          if (fallbackResult.valid) {
-            await this.writeOutputFile(filePath, deterministicFallback);
-            for (const task of taskGroup) {
-              await db
-                .update(tasks)
-                .set({ output: deterministicFallback })
-                .where(eq(tasks.id, task.id));
-            }
-            await this.log(
-              "QA",
-              `Using deterministic fallback early for ${filePath} after duplicate-declaration retry failure`,
               firstTask.id,
             );
             for (const task of taskGroup) {
@@ -1633,67 +1313,10 @@ export class Pipeline {
   }
 
   private validateCrossFileRefs(
-    filePath: string,
-    content: string,
+    _filePath: string,
+    _content: string,
   ): { valid: boolean; reason?: string } {
-    const htmlPath = path.join(this.outputDir(), "index.html");
-    if (!fs.existsSync(htmlPath)) return { valid: true };
-
-    const html = fs.readFileSync(htmlPath, "utf-8");
-
-    const htmlIds = new Set<string>();
-    const htmlClasses = new Set<string>();
-    for (const m of html.matchAll(/id=["']([^"']+)["']/g)) {
-      htmlIds.add(m[1]);
-    }
-    for (const m of html.matchAll(/class=["']([^"']+)["']/g)) {
-      for (const cls of m[1].split(/\s+/)) {
-        if (cls) htmlClasses.add(cls);
-      }
-    }
-
-    if (htmlIds.size === 0 && htmlClasses.size === 0) {
-      return { valid: true };
-    }
-
-    if (filePath === "style.css") {
-      const cssSelectors = content.match(/[.#][\w-]+/g) || [];
-      const matchesAny = cssSelectors.some((sel) => {
-        if (sel.startsWith("#")) return htmlIds.has(sel.slice(1));
-        if (sel.startsWith(".")) return htmlClasses.has(sel.slice(1));
-        return false;
-      });
-      if (cssSelectors.length > 0 && !matchesAny) {
-        return {
-          valid: false,
-          reason: `CSS selectors don't match any HTML IDs/classes. HTML has: ${[
-            ...htmlIds,
-          ]
-            .map((i) => "#" + i)
-            .concat([...htmlClasses].map((c) => "." + c))
-            .join(", ")}`,
-        };
-      }
-    }
-
-    if (filePath === "script.js") {
-      const jsSelectors = [
-        ...content.matchAll(/getElementById\s*\(\s*["']([^"']+)["']\s*\)/g),
-        ...content.matchAll(
-          /querySelector(?:All)?\s*\(\s*["']([^"']+)["']\s*\)/g,
-        ),
-        ...content.matchAll(
-          /getElementsByClassName\s*\(\s*["']([^"']+)["']\s*\)/g,
-        ),
-      ];
-      if (jsSelectors.length === 0 && htmlIds.size + htmlClasses.size > 2) {
-        return {
-          valid: false,
-          reason: `JavaScript doesn't query any DOM elements, but HTML has ${htmlIds.size} IDs and ${htmlClasses.size} classes`,
-        };
-      }
-    }
-
+    // Single-file model — no cross-file validation needed
     return { valid: true };
   }
 
@@ -1706,157 +1329,55 @@ export class Pipeline {
    * small LLMs produce but can't reliably detect in their own output.
    */
   private checkOutputQuality(
-    html: string,
-    css: string,
-    js: string,
+    component: string,
   ): { file: string; issue: string }[] {
     const issues: { file: string; issue: string }[] = [];
 
-    // ── HTML structural checks ──
-    if (html) {
-      // Elements outside the main container (body > direct children that aren't the container)
-      const bodyMatch = html.match(/<body[^>]*>([\s\S]*)<\/body>/i);
-      if (bodyMatch) {
-        const bodyContent = bodyMatch[1];
-        // Count direct child elements (rough heuristic)
-        const topLevelTags = bodyContent.match(
-          /^\s*<(?!script|link|!--)([\w-]+)/gim,
-        );
-        if (topLevelTags && topLevelTags.length > 3) {
-          issues.push({
-            file: "index.html",
-            issue:
-              "Too many top-level elements in <body> — wrap all content in a single container (e.g. <main> or <div id='app'>) so CSS can center and constrain the layout",
-          });
-        }
-      }
-
-      // Form wrapping non-form content
-      const formBlocks = html.match(/<form[^>]*>[\s\S]*?<\/form>/gi) || [];
-      for (const form of formBlocks) {
-        if (form.includes("<ul") || form.includes("<ol")) {
-          issues.push({
-            file: "index.html",
-            issue:
-              "A <ul> or <ol> list is nested inside a <form> — move the list outside the form so it renders as a separate section",
-          });
-        }
-      }
-
-      // Buttons outside any container
-      const mainOrDiv = /<main|<div\s+id=["']app/i.test(html);
-      if (mainOrDiv) {
-        const outsideButtons = html.match(
-          /<\/main>[\s\S]*?<button|<\/div><!--\s*app\s*-->[\s\S]*?<button/i,
-        );
-        if (outsideButtons) {
-          issues.push({
-            file: "index.html",
-            issue:
-              "One or more <button> elements appear outside the main container — move them inside so they inherit container styling",
-          });
-        }
-      }
+    if (!component || component.trim().length < 50) {
+      issues.push({
+        file: "Component.tsx",
+        issue:
+          "Component file is nearly empty — write a complete React component with inline styles",
+      });
+      return issues;
     }
 
-    // ── CSS quality checks ──
-    if (css) {
-      const cssLower = css.toLowerCase();
-      const cssLines = css.split("\n").length;
+    const lower = component.toLowerCase();
 
-      // Barely any CSS
-      if (cssLines < 10 || css.trim().length < 150) {
-        issues.push({
-          file: "style.css",
-          issue:
-            "CSS file is nearly empty or minimal — add proper styling: body layout, font, colors, spacing for all elements, button hover states, and input focus states",
-        });
-      } else {
-        // No body styling
-        if (!cssLower.includes("body")) {
-          issues.push({
-            file: "style.css",
-            issue:
-              "No body CSS rule — add body styling with font-family, background-color, and centered layout",
-          });
-        }
-
-        // No max-width / centering for main container
-        if (
-          !cssLower.includes("max-width") &&
-          !cssLower.includes("margin: 0 auto") &&
-          !cssLower.includes("margin:0 auto") &&
-          !cssLower.includes("margin: auto")
-        ) {
-          issues.push({
-            file: "style.css",
-            issue:
-              "No container centering (max-width + margin auto) — the content will stretch full-width on large screens. Add a centered container with max-width",
-          });
-        }
-
-        // No button styling
-        if (!cssLower.includes("button") && !cssLower.includes("btn")) {
-          issues.push({
-            file: "style.css",
-            issue:
-              "No button styling — add button rules with padding, border-radius, background-color, hover state, and cursor: pointer",
-          });
-        }
-
-        // No hover/focus states at all
-        if (!cssLower.includes(":hover") && !cssLower.includes(":focus")) {
-          issues.push({
-            file: "style.css",
-            issue:
-              "No :hover or :focus states — add hover effects on buttons and focus styles on inputs for better interactivity",
-          });
-        }
-
-        // No input styling
-        if (
-          html &&
-          (html.includes("<input") || html.includes("<textarea")) &&
-          !cssLower.includes("input") &&
-          !cssLower.includes("textarea")
-        ) {
-          issues.push({
-            file: "style.css",
-            issue:
-              "HTML has input/textarea elements but CSS has no input styling — add padding, border, border-radius, and focus state for inputs",
-          });
-        }
-      }
-    } else if (html && html.length > 100) {
+    // Must have a default export
+    if (!lower.includes("export default")) {
       issues.push({
-        file: "style.css",
+        file: "Component.tsx",
         issue:
-          "CSS file is empty but HTML has content — write complete CSS with body layout, element styling, hover states, and responsive design",
+          "No default export found — add 'export default function Component()' or similar",
       });
     }
 
-    // ── JS checks ──
-    if (js && html) {
-      // Check if JS references IDs that don't exist in HTML
-      const jsIds =
-        js.match(/getElementById\(['"](\w+)['"]\)/g)?.map((m) => {
-          const match = m.match(/['"](\w+)['"]/);
-          return match ? match[1] : null;
-        }) || [];
+    // Should use inline styles
+    if (!component.includes("style=") && !component.includes("style:")) {
+      issues.push({
+        file: "Component.tsx",
+        issue:
+          "No inline styles found — use React style objects (e.g., style={{ color: 'red' }}) for all styling",
+      });
+    }
 
-      for (const id of jsIds) {
-        if (
-          id &&
-          !html.includes(`id="${id}"`) &&
-          !html.includes(`id='${id}'`)
-        ) {
-          issues.push({
-            file: "index.html",
-            issue: `JavaScript references element id="${id}" but it doesn't exist in the HTML — add the missing element or fix the ID`,
-          });
-          break; // One warning is enough
-        }
-      }
+    // Should return JSX
+    if (
+      !component.includes("return") ||
+      (!component.includes("<") && !component.includes("React.createElement"))
+    ) {
+      issues.push({
+        file: "Component.tsx",
+        issue:
+          "Component doesn't appear to return JSX — ensure the component returns rendered elements",
+      });
+    }
+
+    // Check for useState/useEffect usage patterns
+    if (lower.includes("usestate") && !lower.includes("import")) {
+      // If they reference hooks but don't import React, it won't work in CDN mode
+      // Actually in CDN mode React is global, so this is fine
     }
 
     return issues;
@@ -1872,16 +1393,14 @@ export class Pipeline {
       return fs.readFileSync(fullPath, "utf-8");
     };
 
-    const html = readFile("index.html");
-    const css = readFile("style.css");
-    const js = readFile("script.js");
+    const component = readFile("Component.tsx");
 
-    if (html.trim().length < 20) return;
+    if (component.trim().length < 20) return;
 
     await this.log("QA", "Running quality review of full output...");
 
     // Phase A: Programmatic quality checks (reliable, catches what LLMs miss)
-    const structuralIssues = this.checkOutputQuality(html, css, js);
+    const structuralIssues = this.checkOutputQuality(component);
 
     // Phase B: LLM holistic review (may find issues the programmatic checks miss)
     const projectFiles: { path: string; content: string }[] = [];
@@ -1944,33 +1463,23 @@ export class Pipeline {
         const issueLower = issue.toLowerCase();
         for (const fp of FILE_ORDER) {
           const keywords: Record<string, string[]> = {
-            "index.html": [
-              "html",
-              "element",
-              "form",
-              "button",
-              "structure",
-              "heading",
-              "container",
-            ],
-            "style.css": [
-              "css",
+            "Component.tsx": [
+              "component",
+              "jsx",
+              "tsx",
+              "react",
+              "render",
               "style",
               "layout",
-              "spacing",
-              "font",
-              "color",
-              "visual",
-              "margin",
-              "padding",
-            ],
-            "script.js": [
-              "js",
-              "javascript",
               "function",
               "event",
               "click",
-              "listener",
+              "state",
+              "hook",
+              "element",
+              "html",
+              "css",
+              "button",
             ],
           };
           if ((keywords[fp] || []).some((kw) => issueLower.includes(kw))) {
@@ -1993,12 +1502,7 @@ export class Pipeline {
       const existingContent = readFile(filePath);
       if (!existingContent || existingContent.trim().length < 20) continue;
 
-      const htmlContext = this.getHTMLContext(filePath);
-
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      if (htmlContext && filePath !== "index.html") {
-        userMessage += `HTML file:\n${htmlContext}\n\n`;
-      }
       userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
       userMessage += `A quality review found these issues:\n`;
       userMessage += fileIssues.map((iss, i) => `${i + 1}. ${iss}`).join("\n");
@@ -2066,8 +1570,8 @@ export class Pipeline {
       return fs.readFileSync(fullPath, "utf-8");
     };
 
-    const html = readFile("index.html");
-    if (html.trim().length < 20) return;
+    const component = readFile("Component.tsx");
+    if (component.trim().length < 20) return;
 
     await this.log(
       "QA",
@@ -2140,12 +1644,7 @@ export class Pipeline {
         continue;
       }
 
-      const htmlContext = this.getHTMLContext(resolvedFile);
-
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      if (htmlContext && resolvedFile !== "index.html") {
-        userMessage += `HTML file:\n${htmlContext}\n\n`;
-      }
       userMessage += `Current ${resolvedFile}:\n${existingContent}\n\n`;
       userMessage += `QA found this issue:\nProblem: ${problem}\nFix: ${fix}\n\n`;
       userMessage += `Apply ONLY this fix. Keep everything else exactly the same. Rewrite the COMPLETE ${resolvedFile} file.`;
@@ -2266,7 +1765,7 @@ USER FEEDBACK:
 ${feedback}
 
 Break this feedback into specific file changes. For each change, specify:
-- FILE: which file to modify (index.html, style.css, or script.js)
+- FILE: Component.tsx (this is the only file)
 - PROBLEM: what needs to change
 - FIX: specific description of how to fix it
 
@@ -2351,12 +1850,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
         `Applying: [${change.file}] ${change.problem}`,
       );
 
-      const htmlContext = this.getHTMLContext(change.file);
-
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      if (htmlContext && change.file !== "index.html") {
-        userMessage += `HTML file:\n${htmlContext}\n\n`;
-      }
       userMessage += `Current ${change.file}:\n${existingContent}\n\n`;
       userMessage += `User feedback requires this change:\nProblem: ${change.problem}\nFix: ${change.fix}\n\n`;
       userMessage += `Apply ONLY this change. Keep everything else exactly the same. Rewrite the COMPLETE ${change.file} file.`;
@@ -2436,24 +1930,29 @@ Only include changes that are relevant to the feedback. Be specific and actionab
     }
   }
 
-  /** Map an LLM-returned filename to one of the 3 template files */
+  /** Map an LLM-returned filename to Component.tsx */
   private resolveTargetFile(name: string): string | null {
+    // Single-file model — everything targets Component.tsx
     const n = name.toLowerCase().trim();
-    if (n.includes("html") || n === "index.html") return "index.html";
-    if (n.includes("css") || n === "style.css" || n === "styles.css")
-      return "style.css";
     if (
+      n.includes("component") ||
+      n.includes("tsx") ||
+      n.includes("jsx") ||
+      n.includes("html") ||
+      n.includes("css") ||
       n.includes("js") ||
-      n === "script.js" ||
-      n === "main.js" ||
-      n === "app.js"
-    )
-      return "script.js";
+      n.includes("style") ||
+      n.includes("script") ||
+      n.includes("index")
+    ) {
+      return "Component.tsx";
+    }
     // Check if it matches one of the template files directly
     for (const f of TEMPLATE_FILES) {
-      if (n === f) return f;
+      if (n === f.toLowerCase()) return f;
     }
-    return null;
+    // Default to Component.tsx for any file reference
+    return "Component.tsx";
   }
 
   // ─────────────────────────────────────────────
@@ -2533,12 +2032,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
         ? fs.readFileSync(outputPath, "utf-8")
         : null;
 
-      const htmlContext = this.getHTMLContext(filePath);
-
       let userMessage = `Project: ${this.projectName}\n\n`;
-      if (htmlContext && filePath !== "index.html") {
-        userMessage += `HTML file:\n${htmlContext}\n\n`;
-      }
       if (existingContent) {
         userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
       }
@@ -2598,15 +2092,13 @@ Only include changes that are relevant to the feedback. Be specific and actionab
       return fs.readFileSync(fullPath, "utf-8");
     };
 
-    const html = readFile("index.html");
-    const css = readFile("style.css");
-    const js = readFile("script.js");
+    const component = readFile("Component.tsx");
 
-    if (html.trim().length < 20) return;
+    if (component.trim().length < 20) return;
 
-    await this.log("CHK", "Running cross-file consistency check...");
+    await this.log("CHK", "Running component consistency check...");
 
-    const issues = validateCrossFileConsistency(html, css, js);
+    const issues = validateCrossFileConsistency(component, "", "");
 
     if (issues.length === 0) {
       await this.log("CHK", "All files are consistent — no cross-file issues");
@@ -2653,8 +2145,7 @@ Only include changes that are relevant to the feedback. Be specific and actionab
       );
 
       const existingContent = readFile(filePath);
-      const htmlContext =
-        filePath !== "index.html" ? readFile("index.html") : "";
+      const htmlContext = "";
 
       let userMessage = `Project: ${this.projectName}\n\n`;
       if (htmlContext) {

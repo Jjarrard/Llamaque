@@ -4,8 +4,8 @@ import { parseTTM, BreakdownBlock } from "@/lib/protocol";
 const SYSTEM_PROMPT = `You are a Project Manager. Break the user's idea into 3-5 high-level epics.
 Each epic must be a CORE FEATURE of the specific app the user described.
 Think: what are the main things a user would DO with this app? Each epic = one of those things.
-Do NOT mention files. Do NOT mention HTML, CSS, or JS. Just describe WHAT the app needs.
-Do NOT use generic website features. Every epic must directly serve the app's purpose.
+Do NOT mention files. Do NOT mention HTML, CSS, JS, or React. Just describe WHAT the component needs.
+Do NOT use generic features. Every epic must directly serve the app's purpose.
 
 Example for a "weather app":
 >>BREAKDOWN

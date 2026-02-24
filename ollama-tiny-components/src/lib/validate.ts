@@ -153,7 +153,7 @@ export function autoRepairOutput(
     }
   }
 
-  // Auto-wrap unguarded top-level DOM bindings in JS
+  // Auto-wrap unguarded top-level DOM bindings in JS (not TSX — React components don't use DOM directly)
   if (ext === "js") {
     // Detect top-level getElementById/querySelector calls NOT inside a function or DOMContentLoaded
     // Pattern: lines at indent 0 that do getElementById/addEventListener outside any function body
@@ -343,6 +343,7 @@ export function validateOutput(
   // Content-type validation: catch wrong content type in file
   if (ext === "js" || ext === "ts" || ext === "jsx" || ext === "tsx") {
     const trimmed = output.trim();
+    const isJsx = ext === "jsx" || ext === "tsx";
     if (
       trimmed.startsWith("<!DOCTYPE") ||
       trimmed.startsWith("<html") ||
@@ -352,28 +353,39 @@ export function validateOutput(
       return {
         valid: false,
         reason:
-          "JavaScript file contains HTML markup instead of JavaScript code. Write only JS code.",
+          "File contains HTML document markup instead of component code. Write a React component, not a full HTML document.",
       };
     }
-    // Check for HTML tags anywhere in the JS file (not in strings/comments)
-    const htmlTagPattern =
-      /^\s*<(?:div|span|button|input|form|table|ul|ol|li|p|h[1-6]|a|img|nav|header|footer|section|main|!DOCTYPE|html|head|body)[\s>]/im;
-    if (htmlTagPattern.test(trimmed)) {
-      return {
-        valid: false,
-        reason:
-          "JavaScript file contains HTML tags. Write only JavaScript code, no HTML.",
-      };
+    // HTML tag checks only apply to plain JS/TS — JSX/TSX legitimately contain HTML-like tags
+    if (!isJsx) {
+      const htmlTagPattern =
+        /^\s*<(?:div|span|button|input|form|table|ul|ol|li|p|h[1-6]|a|img|nav|header|footer|section|main|!DOCTYPE|html|head|body)[\s>]/im;
+      if (htmlTagPattern.test(trimmed)) {
+        return {
+          valid: false,
+          reason:
+            "JavaScript file contains HTML tags. Write only JavaScript code, no HTML.",
+        };
+      }
+      const lines = trimmed.split("\n").filter((l) => l.trim().length > 0);
+      const htmlLines = lines.filter((l) => /^\s*<[a-zA-Z!\/]/.test(l));
+      if (lines.length > 3 && htmlLines.length / lines.length > 0.3) {
+        return {
+          valid: false,
+          reason:
+            "JavaScript file appears to contain HTML markup instead of JavaScript code.",
+        };
+      }
     }
-    // Check if output is mostly HTML tags (more than 30% of lines start with <)
-    const lines = trimmed.split("\n").filter((l) => l.trim().length > 0);
-    const htmlLines = lines.filter((l) => /^\s*<[a-zA-Z!\/]/.test(l));
-    if (lines.length > 3 && htmlLines.length / lines.length > 0.3) {
-      return {
-        valid: false,
-        reason:
-          "JavaScript file appears to contain HTML markup instead of JavaScript code.",
-      };
+    // TSX-specific: must have a default export and return JSX
+    if (isJsx) {
+      if (!trimmed.includes("export default")) {
+        return {
+          valid: false,
+          reason:
+            "TSX component must have a default export (e.g., export default function Component).",
+        };
+      }
     }
     // Check JS file is not just comments
     const jsStripped = trimmed
@@ -776,6 +788,8 @@ function looksLikeInstructionDump(output: string): boolean {
     "current script.js draft",
     "current index.html draft",
     "current style.css draft",
+    "current Component.tsx draft",
+    "current component.tsx draft",
     "do not echo back",
     "reply format:",
     "reply exactly:",
@@ -807,157 +821,15 @@ export interface ConsistencyIssue {
 }
 
 /**
- * Validate cross-file consistency between HTML, CSS, and JS.
- * Checks that:
- *   - JS getElementById/querySelector targets exist in HTML
- *   - CSS id selectors reference IDs that exist in HTML
- *   - HTML includes the style.css and script.js links
- *   - JS has event listeners if HTML has interactive elements
- *   - CSS has styling if HTML has elements to style
+ * Validate cross-file consistency.
+ * In the single-file React component model, there are no cross-file
+ * concerns. Returns an empty issues list.
  */
 export function validateCrossFileConsistency(
-  html: string,
-  css: string,
-  js: string,
+  _html: string,
+  _css: string,
+  _js: string,
 ): ConsistencyIssue[] {
-  const issues: ConsistencyIssue[] = [];
-
-  if (!html || html.trim().length < 20) return issues;
-
-  // Extract IDs from HTML
-  const htmlIds = new Set<string>();
-  const idPattern = /\bid=["']([^"']+)["']/gi;
-  let m;
-  while ((m = idPattern.exec(html)) !== null) {
-    htmlIds.add(m[1]);
-  }
-
-  // Extract classes from HTML
-  const htmlClasses = new Set<string>();
-  const classPattern = /\bclass=["']([^"']+)["']/gi;
-  while ((m = classPattern.exec(html)) !== null) {
-    for (const cls of m[1].split(/\s+/)) {
-      if (cls) htmlClasses.add(cls);
-    }
-  }
-
-  // Check JS → HTML references
-  if (js && js.trim().length > 10) {
-    const jsIdRefs = new Set<string>();
-
-    // getElementById('x')
-    const getByIdPattern = /getElementById\s*\(\s*["']([^"']+)["']\s*\)/g;
-    while ((m = getByIdPattern.exec(js)) !== null) {
-      jsIdRefs.add(m[1]);
-    }
-
-    // querySelector('#x')
-    const qsIdPattern =
-      /querySelector(?:All)?\s*\(\s*["']#([^"'\s.]+)["']\s*\)/g;
-    while ((m = qsIdPattern.exec(js)) !== null) {
-      jsIdRefs.add(m[1]);
-    }
-
-    for (const id of jsIdRefs) {
-      if (!htmlIds.has(id)) {
-        issues.push({
-          file: "script.js",
-          severity: "error",
-          message: `JS references element #${id} but no element with id="${id}" exists in HTML. Either add id="${id}" to an HTML element or fix the JS selector.`,
-        });
-      }
-    }
-
-    // Check JS queries CSS classes that don't exist
-    const jsClassRefs = new Set<string>();
-    const qsClassPattern =
-      /querySelector(?:All)?\s*\(\s*["']\.([^"'\s#.]+)["']\s*\)/g;
-    while ((m = qsClassPattern.exec(js)) !== null) {
-      jsClassRefs.add(m[1]);
-    }
-    const getByClassPattern =
-      /getElementsByClassName\s*\(\s*["']([^"']+)["']\s*\)/g;
-    while ((m = getByClassPattern.exec(js)) !== null) {
-      jsClassRefs.add(m[1]);
-    }
-
-    for (const cls of jsClassRefs) {
-      if (!htmlClasses.has(cls)) {
-        issues.push({
-          file: "script.js",
-          severity: "warning",
-          message: `JS references class .${cls} but no element with class="${cls}" exists in HTML`,
-        });
-      }
-    }
-
-    // Check JS has event listeners if HTML has interactive elements
-    const hasButtons = html.includes("<button");
-    const hasInputs = html.includes("<input");
-    const hasForms = html.includes("<form");
-    if (hasButtons || hasInputs || hasForms) {
-      if (!js.includes("addEventListener") && !js.includes("onclick")) {
-        issues.push({
-          file: "script.js",
-          severity: "warning",
-          message:
-            "HTML has interactive elements (buttons/inputs/forms) but JS has no event listeners",
-        });
-      }
-    }
-  }
-
-  // Check CSS → HTML references (IDs only, classes are too common for false positives)
-  if (css && css.trim().length > 10) {
-    const cssIdRefs = new Set<string>();
-    const cssIdPattern = /#([\w-]+)\s*[{,:\s]/g;
-    while ((m = cssIdPattern.exec(css)) !== null) {
-      cssIdRefs.add(m[1]);
-    }
-
-    for (const id of cssIdRefs) {
-      if (!htmlIds.has(id) && id !== "app") {
-        issues.push({
-          file: "style.css",
-          severity: "warning",
-          message: `CSS targets #${id} but no element with id="${id}" exists in HTML`,
-        });
-      }
-    }
-  }
-
-  // Check HTML has required asset links
-  if (
-    !html.includes('href="style.css"') &&
-    !html.includes("href='style.css'")
-  ) {
-    issues.push({
-      file: "index.html",
-      severity: "error",
-      message:
-        'HTML is missing <link rel="stylesheet" href="style.css">. Add it inside <head>.',
-    });
-  }
-  if (!html.includes('src="script.js"') && !html.includes("src='script.js'")) {
-    issues.push({
-      file: "index.html",
-      severity: "error",
-      message:
-        'HTML is missing <script src="script.js"></script>. Add it before </body>.',
-    });
-  }
-
-  // Check HTML has interactive elements when JS has logic
-  if (js && js.trim().length > 50) {
-    if (htmlIds.size === 0 && htmlClasses.size === 0) {
-      issues.push({
-        file: "index.html",
-        severity: "warning",
-        message:
-          "JS file has logic but HTML has no IDs or classes for JS to target",
-      });
-    }
-  }
-
-  return issues;
+  // Single-file component model — no cross-file validation needed
+  return [];
 }

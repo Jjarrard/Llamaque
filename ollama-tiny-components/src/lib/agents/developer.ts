@@ -2,75 +2,43 @@ import { callOllama } from "@/lib/ollama";
 import { parseTTM, ResultBlock } from "@/lib/protocol";
 
 /**
- * File-type-specific system prompts.
- * Each prompt anchors the model on the exact language expected,
- * preventing common confusion (e.g. HTML leaking into JS/CSS).
+ * System prompt for React TSX component generation.
+ * The output is a single Component.tsx file with inline styles.
  */
 const SYSTEM_PROMPTS: Record<string, string> = {
-  "index.html": `You are a Developer. Write a COMPLETE HTML document implementing ALL listed requirements.
-Use semantic HTML5. Include <link rel="stylesheet" href="style.css"> in <head> and <script src="script.js"></script> before </body>.
-Give every interactive element a unique id attribute (for JS to query).
-NEVER write placeholder comments or descriptions. Write REAL, complete HTML code.
-Do NOT echo back these instructions. Write actual HTML starting with <!DOCTYPE html>.
+  "Component.tsx": `You are a Developer. Write a COMPLETE React TSX component implementing ALL listed requirements.
+Write a single default-exported function component. Use inline styles (React style objects) for ALL styling.
+Use React hooks (useState, useEffect, useRef, etc.) for interactivity and state management.
+Give every interactive element meaningful names for event handlers (e.g., handleAdd, handleDelete).
+Structure: imports at top, helper functions/types, then the main component function with return JSX.
+NEVER write placeholder comments or descriptions. Write REAL, complete component code.
+Do NOT use external CSS files or CSS-in-JS libraries. Use style={{ }} objects only.
+Do NOT echo back these instructions. Write actual React TSX code.
 
 Reply format:
 >>RESULT
 status: DONE
-filePath: index.html
+filePath: Component.tsx
 output: |
-  <!DOCTYPE html>
-  <html lang="en">
-  ... your complete HTML here ...
-  </html>
->>END`,
+  import React, { useState } from "react";
 
-  "style.css": `You are a Developer. Write a COMPLETE CSS file implementing ALL listed requirements.
-Write ONLY CSS rules — no HTML, no <style> tags, no JavaScript.
-Use the class names and IDs that appear in the HTML provided.
-Include responsive, accessible, modern styles (flexbox/grid, hover states, transitions).
-When given a draft, KEEP all existing rules and ADD more styling on top.
-NEVER write placeholder comments or descriptions. Write REAL CSS rules.
-Do NOT echo back these instructions. Write actual CSS rules.
-
-Reply format:
->>RESULT
-status: DONE
-filePath: style.css
-output: |
-  body {
-    ... your CSS rules here ...
+  export default function Component() {
+    ... your complete component here ...
   }
->>END`,
-
-  "script.js": `You are a Developer. Write a COMPLETE JavaScript file implementing ALL listed requirements.
-Write ONLY JavaScript — no HTML, no CSS, no <script> tags.
-Use document.getElementById / querySelector to target elements from the HTML.
-When given a draft with existing functions, KEEP them and ADD real logic inside each function body.
-Declare each function and variable EXACTLY ONCE — no duplicates.
-NEVER write placeholder comments or descriptions. Write REAL JavaScript code.
-Do NOT echo back these instructions. Write actual JavaScript.
-
-Reply format:
->>RESULT
-status: DONE
-filePath: script.js
-output: |
-  // script.js
-  ... your JavaScript code here ...
 >>END`,
 };
 
-const DEFAULT_PROMPT = `You are a Developer. Write the complete file implementing ALL requirements.
-No frameworks — plain HTML, CSS, JavaScript only.
+const DEFAULT_PROMPT = `You are a Developer. Write a complete React TSX component implementing ALL requirements.
+Use inline styles (React style objects). Export a default function component.
 NEVER write placeholder comments or descriptions. Write REAL working code.
 Do NOT echo back these instructions.
 
 Reply format:
 >>RESULT
 status: DONE
-filePath: (filename)
+filePath: Component.tsx
 output: |
-  ... your complete code here ...
+  ... your complete component code here ...
 >>END`;
 
 /**
@@ -93,8 +61,8 @@ export async function runDeveloper(
 }> {
   const systemPrompt = (filePath && SYSTEM_PROMPTS[filePath]) || DEFAULT_PROMPT;
 
-  // Full-file mode with generous token limit — JS needs more room
-  const numPredict = filePath === "script.js" ? 3000 : 2500;
+  // Generous token limit for TSX component generation
+  const numPredict = 3000;
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,

@@ -3,12 +3,12 @@ import { AppOperation } from "@/lib/ops/types";
 /**
  * Compile natural-language requirements into deterministic operations.
  *
- * This compiler generates REAL, WORKING code — not just scaffolds.
- * It recognises common app patterns (CRUD lists, forms, toggles, filters,
- * counters, timers, etc.) and emits operations with full-bodied logic.
+ * For the React TSX component model, deterministic ops are not used —
+ * the LLM generates the complete component. This compiler returns an
+ * empty list which the pipeline handles gracefully (skips the pre-pass).
  *
- * The output is meant to be a functional baseline that already implements
- * core features. The LLM enhances it for polish, edge cases, and richer UX.
+ * The HTML/CSS/JS-specific compilation functions are retained below
+ * but not invoked for Component.tsx files.
  */
 export function compileRequirementsToOperations(
   filePath: string,
@@ -17,6 +17,11 @@ export function compileRequirementsToOperations(
 ): AppOperation[] {
   const ops: AppOperation[] = [];
   const joined = requirements.join(" ").toLowerCase();
+
+  // TSX component files — no deterministic pre-pass, LLM handles everything
+  if (filePath === "Component.tsx" || filePath.endsWith(".tsx")) {
+    return ops;
+  }
 
   if (filePath === "index.html") {
     compileHtmlOps(ops, joined, projectName);

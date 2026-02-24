@@ -30,7 +30,7 @@ export async function GET(
 
   // Build a simple zip manually (using deflate-less zip for simplicity)
   // We keep it dependency-free by creating a tar-like concatenation in zip format
-  const files = ["index.html", "style.css", "script.js"];
+  const files = ["Component.tsx"];
   const fileBuffers: { name: string; data: Buffer }[] = [];
 
   for (const file of files) {
