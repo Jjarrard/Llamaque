@@ -29,6 +29,51 @@ export function autoRepairOutput(
   let code = output;
   const fixes: string[] = [];
 
+  // Strip markdown code fences (```tsx, ```javascript, ``` etc.)
+  if (/^```\w*\s*$/m.test(code)) {
+    code = code
+      .replace(/^```\w*\s*$/gm, "") // opening fences
+      .replace(/^```\s*$/gm, "") // closing fences
+      .trim();
+    fixes.push("Stripped markdown code fences");
+  }
+
+  // Strip trailing English text after code (model dumping explanations)
+  // For TSX/JSX/TS/JS: find the last top-level closing brace and remove everything after it
+  if (ext === "tsx" || ext === "jsx" || ext === "ts" || ext === "js") {
+    const lines = code.split("\n");
+    let lastTopLevelBrace = -1;
+    let depth = 0;
+    for (let i = 0; i < lines.length; i++) {
+      for (const ch of lines[i]) {
+        if (ch === "{") depth++;
+        if (ch === "}") depth--;
+      }
+      if (depth === 0 && lines[i].trim() === "}") {
+        lastTopLevelBrace = i;
+      }
+    }
+    if (lastTopLevelBrace >= 0 && lastTopLevelBrace < lines.length - 1) {
+      // Check if lines after the last top-level brace are English text (not code)
+      const trailing = lines
+        .slice(lastTopLevelBrace + 1)
+        .join("\n")
+        .trim();
+      if (trailing.length > 0) {
+        // If trailing content has no code constructs (import, export, const, function, {, }, ;)
+        // it's likely model explanation text — strip it
+        const hasCodeSyntax =
+          /^(import |export |const |let |var |function |\/\/|\/\*|\{|\}|;|\))/m.test(
+            trailing,
+          );
+        if (!hasCodeSyntax) {
+          code = lines.slice(0, lastTopLevelBrace + 1).join("\n");
+          fixes.push("Stripped trailing explanation text after code");
+        }
+      }
+    }
+  }
+
   // Auto-close braces/brackets/parens for JS/CSS files
   if (
     ext === "js" ||

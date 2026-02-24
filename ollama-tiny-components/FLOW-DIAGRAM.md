@@ -1,16 +1,17 @@
-# Ollama Tiny Tasks — Application Flow Diagram
+# Ollama Tiny Components — Pipeline Flow Diagram
 
-> A complete logic flow of how the system takes a user's idea and turns it into a working HTML/CSS/JS application using small local LLMs.
+> A complete logic flow of how the system takes a user's idea and turns it into a working React TSX component using small local LLMs with TDD.
 
 ---
 
 ## High-Level Pipeline Overview
 
 ```
-User Idea → Decompose → Plan → Merge → Execute → Improve → Consistency → Output Files
+User Idea → Decompose → Plan → Merge → Generate Tests → Execute → Test QA → Structural Review → (Conditional LLM QA) → Output
 ```
 
-The system generates exactly **3 files**: `index.html`, `style.css`, `script.js` — stored in `output/{projectId}/`.
+The system generates a **single file**: `Component.tsx` (+ `Component.test.tsx` for QA) — stored in `output/{projectId}/`.
+Preview uses React 18 CDN + Babel standalone — no build step required.
 
 ---
 
@@ -18,21 +19,16 @@ The system generates exactly **3 files**: `index.html`, `style.css`, `script.js`
 
 ```
 User fills in form:
-  - Project name (e.g. "Todo App")
-  - Description (e.g. "A simple todo list with add, remove, complete")
+  - Project name (e.g. "Pixel Art Editor")
+  - Description (e.g. "A pixel art editor with color picker and grid")
   - Model selection (e.g. "qwen3:4b")
        │
        ▼
   30-second duplicate guard
-  (same name within 30s returns existing project)
        │
        ▼
   Project record saved to SQLite
   Status: "pending"
-       │
-       ▼
-  User lands on Project Page
-  Sees: "Ready to start" status bar
 ```
 
 ---
@@ -43,23 +39,20 @@ User fills in form:
 User clicks "Run All" (or individual stage button)
        │
        ▼
-  Health check Ollama API
-  Verify selected model is available
+  Health check Ollama API + verify model available
        │
-       ├── Fail → Show error: "Ollama not available or model not loaded"
+       ├── Fail → Show error
        │
        └── Pass ↓
               │
               ▼
-        Pipeline starts in background (fire-and-forget)
+        Pipeline starts (fire-and-forget)
         Project status → "running"
-        SSE stream begins sending log entries to UI
+        SSE stream → UI log entries
               │
               ▼
         Create scaffold: output/{id}/
-          - index.html  (basic HTML5 skeleton)
-          - style.css   (empty with comment header)
-          - script.js   (empty with comment header)
+          - Component.tsx (basic starter component)
 ```
 
 ---
@@ -67,500 +60,373 @@ User clicks "Run All" (or individual stage button)
 ## 3. Phase 1: DECOMPOSE — Break Idea into Epics
 
 ```
-Project Manager (PM) Agent
-  Input:  project name + description
-  Role:   "Break this idea into 3-5 high-level epics"
-  Rules:  Each epic must be a CORE FEATURE, not files or tech details
-  Output: Structured list of epics (>>BREAKDOWN block)
+Project Manager Agent → 3-5 high-level epics
        │
-       ├── Parse failure → Retry once
+       ▼
+Reviewer Agent → filter redundant/irrelevant epics
        │
-       └── Success ↓
-              │
-              ▼
-        Reviewer Agent
-          Input:  Numbered list of PM's epics
-          Role:   "Which epics are relevant? Remove duplicates/unrelated"
-          Rule:   "When in doubt, KEEP"
-          Output: List of numbers to keep, or "KEEP: ALL"
-               │
-               ├── Parse failure → Keep everything (safe default)
-               │
-               └── Filtered epics ↓
-                      │
-                      ▼
-                Cap at 5 epics maximum
-                      │
-                      ▼
-                Insert as depth-1 tasks
-                Status: "awaiting_approval"
-                      │
-                      ▼
-                Pipeline pauses → User reviews epics
-                User can: ✓ Approve  ✕ Reject  or "Approve All"
+       ▼
+Cap at 5 epics, insert as depth-1 tasks
+Pipeline pauses → User reviews & approves epics
 ```
-
-**Example:** "Todo App" → Epics: "Task list display", "Add new tasks", "Mark tasks complete", "Delete tasks"
 
 ---
 
-## 4. Phase 2: PLAN — Break Epics into File-Targeted Features
+## 4. Phase 2: PLAN — Break Epics into Features
 
 ```
-For each approved epic (depth 1, status "pending"):
+For each approved epic:
        │
        ▼
-  Set epic status → "decomposing"
+  Manager Agent → 2-3 features per epic
+  All features target "Component.tsx" (single-file model)
        │
        ▼
-  Manager Agent
-    Input:  Epic description + project context
-    Role:   "Break into 2-3 features, each targeting ONE file"
-    Rule:   "The project has exactly 3 files: index.html, style.css, script.js"
-    Rule:   "End each feature with 'in index.html' / 'in style.css' / 'in script.js'"
-    Output: Structured feature list (>>BREAKDOWN block)
+  isVagueOrCircular() filter → reject bad features
        │
-       ├── Parse failure → Retry up to 2 times
-       │
-       ├── Returns >>READY at depth 1 → Force re-prompt
-       │   (Epics MUST be broken down, never marked ready directly)
-       │
-       └── Success ↓
-              │
-              ▼
-        Validate each subtask:
-          isVagueOrCircular() check
-            - Filters stop words, computes keyword overlap with parent
-            - Rejects: "handle the rest", "finish up", circular descriptions
-            - Allows narrower descriptions (< 75% parent length) even with overlap
-            - Flags: same length as parent AND > 80% keyword overlap
-               │
-               ├── ALL subtasks rejected → Retry with stronger prompt
-               │   └── Still all rejected → Mark epic as "stuck"
-               │
-               └── Valid subtasks ↓
-                      │
-                      ▼
-                Cap at 3 features per epic
-                      │
-                      ▼
-                Resolve file path for each feature:
-                  Keyword heuristic:
-                    CSS words → style.css  (style, color, font, grid, hover, etc.)
-                    JS words  → script.js  (click, event, function, logic, toggle, etc.)
-                    Default   → index.html
-                      │
-                      ▼
-                Insert as depth-2 tasks, status "ready"
-                Set epic status → "done"
+       ▼
+  Insert as depth-2 tasks, status "ready"
 ```
 
 ---
 
 ## 5. Phase 3: MERGE — Deduplicate and Fill Gaps (No LLM)
 
-This phase is entirely programmatic — no LLM calls.
-
 ```
-Collect all depth-2 "ready" tasks
+Collect all "ready" depth-2 tasks
        │
        ▼
-  Group by resolved file path
-  (index.html group, style.css group, script.js group)
+  Group by file → deduplicate (60% word overlap threshold)
        │
        ▼
-  Deduplicate within each group:
-    - Normalize descriptions (lowercase, strip quotes)
-    - Strip trailing "in index.html" / "in style.css" / "in script.js"
-    - Compute word overlap between pairs
-    - If overlap > 60% → drop the duplicate
+  Cap at 8 requirements for Component.tsx
        │
        ▼
-  Apply per-file caps:
-    - index.html: max 5 requirements
-    - style.css:  max 4 requirements
-    - script.js:  max 3 requirements
+  ensureBasicSpecs() → add defaults if no features generated
        │
        ▼
-  Fill gaps (ensureBasicSpecs):
-    - No HTML spec?  → Generate default HTML requirements from all features
-    - No CSS spec?   → Generate styling requirements based on detected keywords
-    - No JS spec but needs interactivity? → Generate JS requirements
-       │
-       ▼
-  Result: File specs ready for execution
-    { "index.html": [...requirements], "style.css": [...], "script.js": [...] }
+  Result: requirements[] ready for test generation + execution
 ```
 
 ---
 
-## 6. Phase 4: EXECUTE — Generate Code (HTML → CSS → JS)
-
-Files are processed in strict order: **HTML first, then CSS, then JS** — so each file can reference the previous ones.
-
-### Sub-phase A: Deterministic Pre-Pass (No LLM)
+## 6. Phase 3b: TDD — Generate Tests BEFORE Code ★ NEW
 
 ```
-For ALL files simultaneously:
+Test Writer Agent
+  Input:  project name + description + merged requirements[]
+  Role:   "Write 3-5 tests using vitest + @testing-library/react"
+  Rules:  render checks, element presence, user interactions
+  Output: Component.test.tsx (>>RESULT block)
        │
-       ▼
-  Compiler: requirements → operations
-    Pattern-matches keywords in requirements to generate operations:
-      - "form", "input"  → ensureHtmlElement (input, form, button)
-      - "list"           → ensureHtmlElement (ul container)
-      - "priority"       → ensureHtmlElement (select dropdown)
-      - "style", "hover" → ensureCssRule (styling declarations)
-      - "click", "add"   → ensureJsFunction (handler + state + render)
+       ├── Parse failure → Skip TDD, fall back to LLM-based QA
        │
-       ▼
-  Executor: operations → code
-    Applies operations idempotently to file bundle:
-      - HTML: Insert elements into parent by ID (regex-based)
-      - CSS:  Merge rules (update existing declarations, add new)
-      - JS:   Add functions/consts (skip if name already exists)
-       │
-       ▼
-  Save as "deterministic draft" (fallback for if LLM fails)
-  Write to output files
-```
-
-This guarantees a **working baseline** before any LLM touches the code. The deterministic compiler produces syntactically valid CRUD app code.
-
-### Sub-phase B: Sequential LLM Enhancement
-
-```
-For each file (HTML → CSS → JS):
-  For each requirement (one at a time):
-       │
-       ▼
-    Mark corresponding task(s) → "executing"
-       │
-       ▼
-    Build context:
-      - Read current file content (includes previous steps' changes)
-      - Read HTML context (for CSS/JS files)
-      - Read CSS context (for JS files)
-       │
-       ▼
-    Developer Agent
-      If file has content:
-        "ENHANCE the file, keep ALL existing code, add ONLY this feature: ..."
-      If file is empty:
-        "Write the complete file implementing this feature: ..."
-      Includes file-specific rules:
-        - HTML: "Include stylesheet/script links, use unique IDs"
-        - CSS:  "Write ONLY CSS, keep existing rules, add more"
-        - JS:   "Declare each function EXACTLY ONCE, no duplicates"
-       │
-       ├── Parse failure → Skip this step, mark tasks done
-       │
-       └── Got code output ↓
+       └── Success ↓
               │
               ▼
-        Auto-Repair Pipeline:
-          - JS/CSS: Auto-close unclosed braces/parens/brackets
-          - HTML: Fix truncated charset (UTF- → UTF-8)
-          - HTML: Move misplaced <script> to before </body>
-          - HTML: Remove malformed closing tags
-          - HTML: Fix self-closing block tags (<form/> → <form>)
-          - HTML: Remove content after </html>
-          - HTML: Auto-close unclosed block tags
-          - JS:   Wrap unguarded top-level DOM bindings in DOMContentLoaded
+        autoRepairOutput() → strip fences, fix braces
               │
               ▼
-        Validate (lenient mode, allows scaffolds):
-          ✓ Not empty / too short
-          ✓ Not echoing prompt template
-          ✓ Not placeholder code ("// your code here", "// TODO")
-          ✓ Per-file minimum requirements (size, tags, syntax)
-          ✓ Not an instruction dump (model parroting system prompt)
-          ✓ No content-type contamination (JS containing HTML, etc.)
-          ✓ Balanced braces/brackets/parens
+        Write output/{id}/Component.test.tsx
               │
-              ├── Invalid → Discard, keep previous version, continue
-              │
-              └── Valid → Write to file, mark step tasks "done"
-                          Next requirement sees updated file content
+              ▼
+        Tests exist BEFORE Component.tsx is written
+        Developer Agent will see tests as part of its context
 ```
 
-### Sub-phase C: Final QA (Per File)
+**Test file structure:**
 
-```
-Read final file content
-       │
-       ├── File still empty?
-       │     ├── Use deterministic draft as fallback
-       │     └── Still empty? → Mark all file tasks "stuck"
-       │
-       └── Has content ↓
-              │
-              ▼
-        Full auto-repair pass
-              │
-              ▼
-        Strict validation (no scaffold allowed):
-          All checks from lenient mode, PLUS:
-          ✓ JS scaffold detection (empty function bodies)
-          ✓ CSS scaffold detection (only reset rules, no feature styling)
-          ✓ Duplicate JS declarations (function/const/let/var)
-          ✓ Excessive CSS selector duplication (same selector >4 times)
-          ✓ HTML tag balance check
-              │
-              ├── JS duplicates found → removeDuplicateJsDeclarations()
-              │   (strips second occurrence of top-level declarations)
-              │
-              ├── Valid → Mark all file tasks "done" ✓
-              │
-              └── Invalid → Enter retry logic...
+```tsx
+import { describe, it, expect } from "vitest";
+import { render, screen, fireEvent } from "@testing-library/react";
+import PixelArtEditor from "./Component";
+
+describe("PixelArtEditor", () => {
+  it("renders without crashing", () => { ... });
+  it("has a color picker", () => { ... });
+  it("has a canvas element", () => { ... });
+  // 3-5 practical tests
+});
 ```
 
 ---
 
-## 7. Retry Logic (QA Failures)
+## 7. Phase 4: EXECUTE — Generate Component Code
 
-```
-Validation failed on a file
+````
+For each requirement (one at a time, sequential):
        │
        ▼
-  Check failure type:
+  Build prompt with current Component.tsx + requirement
        │
-       ├── Instruction dump? → Use deterministic fallback immediately
-       │
-       ├── CSS brace error? → Use deterministic fallback immediately
-       │
-       ├── JS duplicates (after 1+ retry)? → Use deterministic fallback
-       │
-       └── Other failure ↓
-              │
-              ▼
-        retryCount < 2?
-              │
-              ├── Yes → Reset tasks to "ready" with qAReason
-              │         Re-run entire executeSpec() for this file
-              │         (Developer sees QA feedback on first step)
-              │
-              └── No (retries exhausted) ↓
-                     │
-                     ▼
-               Try deterministic fallback one last time
-                     │
-                     ├── Fallback passes validation → Use it ✓
-                     │
-                     └── Fallback also fails → Mark tasks "stuck" ✗
-                         (User can retry/skip/edit from UI)
-```
-
-The deterministic fallback (compiler-generated code) is always syntactically valid, making it a reliable safety net.
+       ▼
+  Self-healing loop (up to 3 attempts):
+    Developer Agent → code output
+         │
+         ▼
+    autoRepairOutput():
+      - Strip markdown fences (```tsx)
+      - Strip trailing English text after code
+      - Auto-close unclosed braces/parens/brackets
+         │
+         ▼
+    validateOutput() (lenient, allows scaffold):
+      ✓ Not empty
+      ✓ Has export default function
+      ✓ Has return statement with JSX
+      ✓ Not truncated
+      ✓ No placeholder code
+         │
+         ├── Invalid → Feed error back to LLM, retry
+         │
+         └── Valid → Write to file, next requirement
+````
 
 ---
 
-## 8. Phase 5: IMPROVE — Cross-File Bug Review
+## 8. Phase 5: TEST QA — Run Tests, Fix Failures One at a Time ★ NEW
+
+This is the **primary QA mechanism** — objective, deterministic, no LLM judgment.
 
 ```
-Read all 3 output files (HTML, CSS, JS)
+fixTestImport():
+  Detect actual export name (e.g. "PixelArtEditor")
+  Fix test imports to match (replace "Component" → "PixelArtEditor")
        │
        ▼
-  Improver Agent
-    Input:  All 3 files + project description
-    Role:   "Find cross-file bugs"
-    Checks: Duplicate functions, placeholders, broken structure,
-            invalid syntax, mismatched references, unnecessary code
-    Output: List of fixes per file, or "NO_ISSUES"
+  Run: vitest run --reporter=json output/{id}/Component.test.tsx
        │
-       ├── No issues → Skip, move on ✓
+       ├── vitest CRASHED (syntax error, bad import)?
+       │     │
+       │     ▼
+       │   repairTestFile() — LLM fixes the test file itself
+       │   Retry up to 2 times
+       │     │
+       │     ├── Still crashing → Delete bad test file, skip to LLM QA
+       │     │
+       │     └── Fixed → Continue with test results ↓
        │
-       └── Issues found ↓
+       └── Got results ↓
               │
               ▼
-        Group fixes by file
-        For each file with fixes:
+        All passing? → Done! Skip to Phase 6 ✓
               │
               ▼
-          Developer Agent
-            Input:  Current file + list of fixes to apply
-            Output: Fixed file content
-              │
-              ▼
-          Auto-repair → Validate
-              │
-              ├── Valid → Write updated file ✓
-              │
-              └── Invalid → Keep original file (don't make it worse)
+        Fix loop (up to 8 rounds):
+          │
+          ▼
+        Pick FIRST failing test
+          │
+          ▼
+        Build fix prompt (context-aware, truncated for small models):
+          - Current Component.tsx (truncated to ~100 lines)
+          - Only the FAILING test block (extracted, not full file)
+          - Failing test name + error message (capped at 500 chars)
+          - "Fix the Component.tsx so this test passes"
+          │
+          ▼
+        Developer Agent → fixed Component.tsx
+          │
+          ▼
+        autoRepairOutput() → validateOutput()
+          │
+          ├── Invalid → Skip this fix, continue
+          │
+          └── Valid → Write file, re-run ALL tests
+                │
+                ├── Fewer failures → Progress! Continue fixing next failure
+                │
+                ├── Same/more failures after 2 attempts on same test →
+                │   Test might be wrong → repairSingleTest()
+                │   LLM fixes/removes the bad test → re-run
+                │
+                └── All passing → Done! ✓
 ```
+
+**Key principle:** Tests are treated as the source of truth. The component gets fixed to match the tests. Only when the component CAN'T pass a test do we consider the test wrong.
 
 ---
 
-## 9. Phase 6: CONSISTENCY — Cross-File Validation
+## 9. Phase 6: HOLISTIC REVIEW — Structural Quality Checks (Programmatic Only)
 
 ```
-Read all 3 output files
-       │
-       ▼
-  Programmatic cross-file validation (no LLM):
-    ✓ JS getElementById() targets exist in HTML
-    ✓ JS querySelector() targets exist in HTML
-    ✓ JS class references exist in HTML
-    ✓ CSS ID selectors reference real HTML IDs
-    ✓ HTML includes <link href="style.css">
-    ✓ HTML includes <script src="script.js">
-    ✓ If HTML has interactive elements → JS should have event listeners
-    ✓ If JS has logic → HTML should have IDs/classes to target
+Programmatic checks (checkOutputQuality):
+  ✓ Has default export
+  ✓ Uses inline styles (no external CSS)
+  ✓ Has return statement + JSX
+  ✓ Balanced braces
+  ✓ Minimum code length
        │
        ├── All pass → Done ✓
        │
-       └── Errors found ↓
-              │
-              ▼
-        Group errors by file
-        For each file with errors:
-              │
-              ▼
-          Developer Agent fixes → Auto-repair → Validate → Write if valid
-              │
-              ▼
-        Project status → "done" (or "paused" if any tasks stuck)
+       └── Issues found → Developer Agent fixes (no LLM review step)
+```
+
+LLM holistic review is **skipped entirely** — small models hallucinate phantom issues
+and introduce bugs while "fixing" them. Tests + structural checks are sufficient.
+
+---
+
+## 10. Phase 7: ITERATIVE QA — LLM Find-One-Fix-One (Only When Tests Fail)
+
+```
+** SKIPPED if all TDD tests pass ** (saves LLM calls + prevents bug introduction)
+
+Loop up to 5 rounds:
+  │
+  ▼
+  Iterative QA Agent
+    "Find ONE bug in this component"
+    Returns: { file, problem, fix } or NO_ISSUES
+       │
+       ├── NO_ISSUES → Done ✓
+       │
+       └── Issue found → Developer Agent fixes → validate → write
+           Track previousFixes[] to avoid re-reporting
+```
+
+This is the **fallback** QA — only runs when tests couldn't verify quality.
+
+---
+
+## 11. Phase 8: IMPROVE — Component Bug Review (Only When Tests Fail)
+
+```
+** SKIPPED if all TDD tests pass **
+
+Improver Agent reviews component for remaining bugs
+  ├── No issues → Skip
+  └── Issues → Developer fixes each → validate → write
 ```
 
 ---
 
-## 10. LLM Communication Details
+## 12. Phase 9: CONSISTENCY — Final Validation
 
 ```
-Every LLM call follows this pattern:
+Single-component model → lightweight pass (structural validation only)
+```
 
-  Build system prompt (agent-specific)
-  Build user message (task-specific)
+---
+
+## 13. Feedback Loop — User-Driven Iteration
+
+```
+User provides feedback (e.g. "make the grid larger")
        │
        ▼
-  callOllama(model, role, systemPrompt, userMessage)
+  Backup Component.tsx → Component.tsx.bak
        │
        ▼
-  Hardening for small models:
-    - Prefill trick: inject { role: "assistant", content: ">>" }
-      (Forces model to start in structured output mode)
-    - Stop sequence: ">>END" (prevents rambling)
-    - Low temperature (0 for most agents, 0.3 for PM)
-    - Fixed context window: 4096 tokens
-    - Per-agent token limits (100-600 depending on role)
-    - 30-minute keep-alive (model stays loaded between calls)
+  Self-healing loop (up to 3 attempts):
+    Feed feedback + current code to LLM → output
+    autoRepairOutput() → validateOutput()
        │
-       ▼
-  Parse response using TTM (TinyTask Markup):
-    Regex extracts: >>COMMAND\nkey: value\n>>END blocks
-    Fuzzy matching (case-insensitive, handles missing >>END)
-    Handles prefill consuming the ">>" prefix
+       ├── Valid → Write file
        │
-       ├── Parse success → Return structured data
-       │
-       └── Parse failure → Retry (up to MAX_PARSE_RETRIES = 2)
-```
-
----
-
-## 11. Task Tree Structure
-
-```
-Project
-  └── Depth 0: Root (implicit)
-        └── Depth 1: Epics (3-5 high-level features)
-              │   Status flow: awaiting_approval → pending → decomposing → done
+       └── All attempts fail → Restore backup
               │
-              └── Depth 2: Features (2-3 per epic, file-targeted)
-                    Status flow: pending → ready → executing → qa_check → done
-                                                             → editing → done
-                                                             → stuck (terminal)
-```
-
-### Task Status Transitions
-
-```
-awaiting_approval ──[user approves]──→ pending
-pending           ──[breakdown starts]──→ decomposing
-decomposing       ──[subtasks created]──→ done (epic itself)
-pending           ──[auto at max depth]──→ ready
-ready             ──[execute starts]──→ executing
-executing         ──[code generated]──→ done
-executing         ──[QA failure]──→ ready (retry)
-executing         ──[max retries]──→ stuck
-stuck             ──[user retries]──→ ready
-stuck             ──[user skips]──→ done
+              ▼
+  Run full QA pipeline:
+    - tests
+    - structural review
+    - iterative QA + improve (only if tests fail)
+       │
+       ▼
+  Pause → User can provide more feedback
 ```
 
 ---
 
-## 12. UI Data Flow
+## 14. LLM Communication Protocol
 
 ```
-                    ┌──────────────────────┐
-                    │   Project Page (UI)   │
-                    └──────┬───────────────┘
-                           │
-              ┌────────────┼────────────────┐
-              │            │                │
-              ▼            ▼                ▼
-        SSE Stream    HTTP Polling     User Actions
-        (live logs)   (task status     (run, stop, approve,
-         via          every 5s         reject, retry, skip,
-         EventSource  while running)   delete, re-run stage)
-              │            │                │
-              └────────────┼────────────────┘
-                           │
-                           ▼
-                    Status Bar derives
-                    current state from
-                    task statuses:
-                      - "Ready to start"
-                      - "Decomposing..."
-                      - "Executing — {task}..."
-                      - "QA checking..."
-                      - "Editing — fixing..."
-                      - "X tasks stuck"
-                      - "Paused — X/Y done"
-                      - "Complete"
+Every LLM call:
+  System prompt (agent-specific, concise)
+  User message (task-specific, with context)
+       │
+       ▼
+  Ollama API with hardening:
+    - Prefill: { role: "assistant", content: ">>" }
+    - Stop sequence: ">>END"
+    - Temperature: 0 (most agents), 0.3 (PM)
+    - Context window: 32768 tokens
+    - Unlimited output: numPredict = -1
+    - 30m keep-alive
+       │
+       ▼
+  Parse TTM (TinyTask Markup):
+    >>COMMAND\nkey: value\noutput: |\n  (code)\n>>END
+    Fuzzy: case-insensitive, handles missing >>END
+       │
+       ├── Success → Structured data
+       └── Failure → Retry (2x)
 ```
 
 ---
 
-## 13. Error Recovery & Safety Nets
+## 15. Test Infrastructure
 
-| Layer                      | Mechanism                                                   | Purpose                                        |
-| -------------------------- | ----------------------------------------------------------- | ---------------------------------------------- |
-| **LLM Parse**              | Parse retry (2x)                                            | Handle garbled TTM output                      |
-| **Vague Detection**        | isVagueOrCircular()                                         | Prevent circular task decomposition            |
-| **Auto-Repair**            | Brace closing, script relocation, charset fix, DOM wrapping | Fix common small-LLM output errors             |
-| **Validation**             | Programmatic checks (not LLM)                               | Catch invalid code before writing              |
-| **Deterministic Fallback** | Compiler → Executor                                         | Guaranteed working baseline if LLM fails       |
-| **QA Retry**               | Re-execute with feedback (2x)                               | Give LLM another chance with error info        |
-| **Stuck State**            | User intervention                                           | Manual retry/skip/edit for unrecoverable tasks |
-| **Validate-Before-Write**  | Every LLM output checked                                    | Never overwrite good code with bad code        |
-| **Cross-File Consistency** | Programmatic reference checks                               | Catch broken ID/class references across files  |
+```
+vitest.config.mts:
+  environment: jsdom
+  globals: true
+  include: output/**/Component.test.tsx
+  setupFiles: vitest.setup.mts (@testing-library/jest-dom)
+
+Test Runner (src/lib/test-runner.ts):
+  execSync("vitest run --reporter=json ...")
+  Parses JSON → { passed, failed, total, tests[], crashed, crashError }
+
+Test Writer Agent (src/lib/agents/test-writer.ts):
+  Input: project name + description + requirements
+  Output: Component.test.tsx with 3-8 practical tests
+
+Dependencies:
+  vitest, @testing-library/react, @testing-library/dom,
+  @testing-library/jest-dom, @testing-library/user-event, jsdom
+```
 
 ---
 
-## 14. Complete End-to-End Sequence
+## 16. Error Recovery & Safety Nets
+
+| Layer                      | Mechanism                                 | Purpose                                      |
+| -------------------------- | ----------------------------------------- | -------------------------------------------- |
+| **Test-Based QA**          | vitest run → JSON results                 | Objective, deterministic code validation     |
+| **Test Self-Repair**       | LLM fixes crashed/bad tests               | Tests aren't sacred — fix or remove bad ones |
+| **Component Self-Heal**    | Feed validation errors back → retry (3x)  | LLM sees its own mistakes                    |
+| **Code Auto-Repair**       | Strip fences, trailing text, close braces | Fix common small-LLM output errors           |
+| **Output Validation**      | Programmatic checks (export, return, JSX) | Catch invalid code before writing            |
+| **Backup + Restore**       | Feedback backs up before modifying        | Never lose working code                      |
+| **Deterministic Fallback** | Pre-pass draft as safety net              | Working baseline if LLM completely fails     |
+| **Test Import Fix**        | Auto-detect export name → fix imports     | Tests work regardless of component name      |
+| **LLM Parse Retry**        | Up to 2 parse retries per call            | Handle garbled TTM output                    |
+| **Stuck State**            | User can retry/skip from UI               | Manual escape hatch                          |
+
+---
+
+## 17. Complete End-to-End Sequence
 
 ```
-1.  User creates project with name + description
-2.  User clicks "Run All"
-3.  Ollama health check passes
-4.  Scaffold created (3 empty files)
-5.  PM agent decomposes idea into 3-5 epics
-6.  Reviewer agent filters epics
-7.  User reviews and approves epics
-8.  Manager agent breaks each epic into 2-3 file-targeted features
-9.  Vague/circular features rejected
-10. Features grouped by file, deduplicated, capped
-11. Gap-filling adds missing file specs
-12. Deterministic compiler generates baseline code for all files
-13. LLM enhances HTML (one requirement at a time, accumulating)
-14. LLM enhances CSS (with HTML context, one requirement at a time)
-15. LLM enhances JS  (with HTML+CSS context, one requirement at a time)
-16. Each step: auto-repair → validate → write only if valid
-17. Final QA per file (strict validation + retry up to 2x)
-18. Fallback to deterministic code if LLM repeatedly fails
-19. Improver agent reviews all 3 files for cross-file bugs
-20. Developer fixes any issues found
-21. Programmatic cross-file consistency check
-22. Developer fixes any reference mismatches
-23. Project marked "done" → 3 working output files
+ 1. User creates project with name + description + model
+ 2. User clicks "Run All"
+ 3. Ollama health check passes
+ 4. Scaffold created (starter Component.tsx)
+ 5. PM decomposes idea → 3-5 epics
+ 6. Reviewer filters epics
+ 7. User reviews and approves epics
+ 8. Manager breaks each epic → 2-3 features
+ 9. Vague/circular features rejected
+10. Features deduplicated, capped at 8
+11. ★ Test Writer generates Component.test.tsx from requirements
+12. Developer writes Component.tsx (sequential, one requirement at a time)
+13. Each step: auto-repair → validate → write only if valid
+14. ★ Run vitest — fix failing tests one at a time (up to 8 rounds)
+15. Holistic review (structural checks + LLM)
+16. Iterative QA (LLM find-one-fix-one, up to 5 rounds)
+17. Improver reviews for remaining bugs
+18. Final consistency check
+19. Project marked "done" → Component.tsx + Component.test.tsx
+20. Preview: React CDN + Babel standalone renders in iframe
 ```

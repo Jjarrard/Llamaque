@@ -5,14 +5,19 @@
  *   1. DECOMPOSE — PM breaks idea into 3-5 epics
  *   2. PLAN — Manager breaks each epic into 2-3 component features
  *   3. MERGE — Programmatic: group features, deduplicate, cap at 8
+ *   3b. TDD: GENERATE TESTS — Test-writer creates Component.test.tsx from requirements
  *   4. EXECUTE — Sequential: one requirement at a time for Component.tsx
- *   5. REVIEW — Programmatic quality checks + LLM holistic review
- *   6. ITERATIVE QA — Find one bug → fix → repeat (up to 5 rounds)
- *   7. IMPROVE — Improver reviews component for remaining bugs
- *   8. CONSISTENCY — Programmatic validation + auto-fix
+ *   5. TDD: TEST QA — Run vitest, fix failing tests one at a time (PRIMARY QA)
+ *   6. REVIEW — Programmatic structural checks (no LLM — small models hallucinate issues)
+ *   7. ITERATIVE QA — Find one bug → fix → repeat (ONLY if tests failed)
+ *   8. IMPROVE — Improver reviews component (ONLY if tests failed)
+ *   9. CONSISTENCY — Programmatic validation
  *
  * Output is a single React TSX component with inline styles.
  * No build step — preview uses React CDN + Babel standalone.
+ *
+ * Designed for small local LLMs — prompts are truncated, context is
+ * minimized, and redundant LLM calls are skipped when tests pass.
  */
 
 import { db } from "@/db";
@@ -23,9 +28,10 @@ import { runReviewer } from "@/lib/agents/reviewer";
 import { runImprover } from "@/lib/agents/improver";
 import { runManager } from "@/lib/agents/manager";
 import { runDeveloper } from "@/lib/agents/developer";
-import { runHolisticReview } from "@/lib/agents/holistic-reviewer";
 import { runIterativeQA } from "@/lib/agents/iterative-qa";
+import { runTestWriter } from "@/lib/agents/test-writer";
 import { validateOutput, autoRepairOutput } from "@/lib/validate";
+import { runTests, getFirstFailure, TestRunResult } from "@/lib/test-runner";
 import { callOllama as callOllamaFn } from "@/lib/ollama";
 import { isVagueOrCircular, extractReferences, parseTTM } from "@/lib/protocol";
 import fs from "fs";
@@ -667,6 +673,12 @@ export default function Component() {
     // Ensure CSS/JS get basic specs if model forgot them
     this.ensureBasicSpecs(fileSpecs, fileGroups);
 
+    // TDD: Generate tests BEFORE writing code
+    const componentSpec = fileSpecs["Component.tsx"];
+    if (componentSpec && componentSpec.requirements.length > 0) {
+      await this.generateTests(componentSpec.requirements);
+    }
+
     // Execute in dependency order: HTML → CSS → JS
     for (const filePath of FILE_ORDER) {
       if (this.aborted) break;
@@ -853,7 +865,7 @@ export default function Component() {
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
 
       if (hasContent) {
-        userMessage += `Current ${filePath}:\n\`\`\`\n${this.truncateForPrompt(currentContent, 160)}\n\`\`\`\n\n`;
+        userMessage += `Current ${filePath}:\n${this.truncateForPrompt(currentContent, 100)}\n\n`;
         userMessage += `ENHANCE the file above. Keep ALL existing code intact. Add ONLY this feature:\n- ${req}\n\nWrite the COMPLETE updated file with the new feature added.`;
       } else {
         userMessage += `Write the complete ${filePath} file implementing this feature:\n- ${req}`;
@@ -869,6 +881,7 @@ export default function Component() {
       }
 
       userMessage = this.withCustomInstructions(userMessage);
+      this.warnIfPromptTooLarge(`Execute step ${i + 1}`, userMessage);
 
       // Self-healing loop: try → validate → feed error back → retry
       let stepPassed = false;
@@ -1048,7 +1061,7 @@ export default function Component() {
     const draft = this.getCurrentFileContent(filePath);
     if (!draft) return null;
     this.deterministicDraftByFile[filePath] = draft;
-    return this.truncateForPrompt(draft, 160);
+    return this.truncateForPrompt(draft, 100);
   }
 
   private getCurrentFileContent(filePath: string): string | null {
@@ -1061,6 +1074,89 @@ export default function Component() {
     const lines = content.split("\n");
     if (lines.length <= maxLines) return content;
     return lines.slice(0, maxLines).join("\n") + "\n/* ... */";
+  }
+
+  /**
+   * Extract only the failing test's code block from the full test file.
+   * Returns the imports + the specific it() block (or the full file if
+   * the test can't be located, truncated to 60 lines).
+   */
+  private extractRelevantTest(testCode: string, testName: string): string {
+    const lines = testCode.split("\n");
+
+    // Always include import lines (first ~10 lines)
+    const importLines: string[] = [];
+    let importEnd = 0;
+    for (let i = 0; i < Math.min(lines.length, 15); i++) {
+      if (
+        lines[i].trim().startsWith("import") ||
+        lines[i].trim() === "" ||
+        lines[i].trim().startsWith("//")
+      ) {
+        importLines.push(lines[i]);
+        importEnd = i + 1;
+      } else {
+        break;
+      }
+    }
+
+    // Try to find the specific it() block by test name
+    const escapedName = testName.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+    const itPattern = new RegExp(`it\\s*\\(\\s*["'\`]${escapedName}`, "i");
+
+    for (let i = importEnd; i < lines.length; i++) {
+      if (itPattern.test(lines[i])) {
+        // Found the test — extract from here to its closing brace
+        let depth = 0;
+        let end = i;
+        for (let j = i; j < lines.length; j++) {
+          for (const ch of lines[j]) {
+            if (ch === "{" || ch === "(") depth++;
+            if (ch === "}" || ch === ")") depth--;
+          }
+          end = j;
+          if (depth <= 0) break;
+        }
+        // Include the describe wrapper line if nearby
+        const describeLines: string[] = [];
+        for (let k = Math.max(importEnd, i - 3); k < i; k++) {
+          if (lines[k].includes("describe")) {
+            describeLines.push(lines[k]);
+          }
+        }
+        return [
+          ...importLines,
+          "",
+          ...describeLines,
+          ...lines.slice(i, end + 1),
+          "});", // close describe
+        ].join("\n");
+      }
+    }
+
+    // Couldn't find it — return truncated full file
+    return this.truncateForPrompt(testCode, 60);
+  }
+
+  /**
+   * Rough token estimate (~4 chars per token for English/code).
+   * Logs a warning if the prompt exceeds a safety threshold.
+   */
+  private estimateTokens(text: string): number {
+    return Math.ceil(text.length / 4);
+  }
+
+  private warnIfPromptTooLarge(label: string, prompt: string) {
+    const est = this.estimateTokens(prompt);
+    // Warn if prompt alone eats >60% of our 32K context window
+    // leaving little room for the model's output
+    if (est > 19000) {
+      // Log synchronously (fire and forget)
+      this.log(
+        "WARN",
+        `${label} prompt is ~${est} tokens (${prompt.length} chars) — may exceed context window. Consider reducing input.`,
+      ).catch(() => {});
+    }
   }
 
   // ─────────────────────────────────────────────
@@ -1208,14 +1304,545 @@ export default function Component() {
   // ─────────────────────────────────────────────
 
   /**
-   * Runs the complete QA pipeline: holistic review → iterative QA → improve → consistency.
-   * Used after execute and after feedback so both paths get the same checks.
+   * Runs the complete QA pipeline:
+   *   1. Test-based QA (run vitest, fix failures one at a time) — PRIMARY
+   *   2. Holistic review (structural checks — programmatic only)
+   *   3. Iterative QA (LLM find-one-fix-one) — ONLY if tests failed
+   *   4. Improve pass — ONLY if tests failed
+   *   5. Consistency check
+   *
+   * When TDD tests all pass, skip the expensive LLM-based QA passes.
+   * Small models hallucinate phantom issues and introduce bugs while "fixing" them.
    */
   private async runFullQA() {
+    const testsAllPassed = await this.runTestQA();
     await this.runHolisticReviewPass();
-    await this.runIterativeQAPass();
-    await this.runImprovementPass();
+
+    if (testsAllPassed) {
+      await this.log(
+        "QA",
+        "Tests all pass — skipping iterative QA and improvement (would risk introducing bugs)",
+      );
+    } else {
+      // Tests failed or don't exist: fall back to LLM-based QA as secondary safety net
+      await this.runIterativeQAPass();
+      await this.runImprovementPass();
+    }
+
     await this.runConsistencyCheck();
+  }
+
+  // ─────────────────────────────────────────────
+  //  TDD: TEST GENERATION
+  // ─────────────────────────────────────────────
+
+  /** Max attempts to fix the test file itself when vitest crashes */
+  private static readonly MAX_TEST_REPAIR_ATTEMPTS = 2;
+
+  /** Max test-fix rounds (run tests → fix first failure → repeat) */
+  private static readonly MAX_TEST_FIX_ROUNDS = 8;
+
+  /**
+   * Generate Component.test.tsx from project requirements using the test-writer agent.
+   * Called before code generation (TDD: tests first).
+   */
+  private async generateTests(requirements: string[]) {
+    await this.log("TDD", "Generating tests from requirements...");
+
+    const result = await runTestWriter(
+      this.model,
+      this.projectName,
+      this.projectDescription,
+      requirements,
+    );
+
+    if (!result.tests) {
+      await this.log(
+        "TDD",
+        "Test writer failed to produce tests — skipping TDD",
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+      return;
+    }
+
+    // Auto-repair the test output (strip fences, trailing text, fix braces)
+    const { repaired, fixes } = autoRepairOutput(
+      result.tests,
+      "Component.test.tsx",
+    );
+    if (fixes.length > 0) {
+      await this.log("TDD", `Auto-repaired test file: ${fixes.join(", ")}`);
+    }
+
+    // Fix the import to use the correct component name
+    // The test-writer might import "Component" but the actual export could be "PixelArtEditor" etc.
+    // We'll fix this at test-run time if needed since the component doesn't exist yet.
+
+    const outDir = this.outputDir();
+    const testPath = path.join(outDir, "Component.test.tsx");
+    fs.writeFileSync(testPath, repaired, "utf-8");
+
+    await this.log(
+      "TDD",
+      `Generated Component.test.tsx (${result.tokens} tokens, ${result.durationMs}ms)`,
+      undefined,
+      result.prompt,
+      result.raw,
+    );
+  }
+
+  // ─────────────────────────────────────────────
+  //  TDD: TEST-BASED QA (run tests → fix failures one at a time)
+  // ─────────────────────────────────────────────
+
+  /**
+   * Run vitest against Component.test.tsx.
+   * For each failing test: feed the error to the Developer agent → fix → re-run.
+   * If vitest itself crashes (bad test syntax), repair the test file first.
+   * @returns true if all tests pass (or no test file exists), false if failures remain
+   */
+  private async runTestQA(): Promise<boolean> {
+    const outDir = this.outputDir();
+    const testPath = path.join(outDir, "Component.test.tsx");
+
+    if (!fs.existsSync(testPath)) {
+      await this.log("TDD", "No test file found — skipping test-based QA");
+      return false; // no tests = can't confirm quality
+    }
+
+    const componentPath = path.join(outDir, "Component.tsx");
+    if (!fs.existsSync(componentPath)) {
+      await this.log("TDD", "No component file — skipping test-based QA");
+      return false;
+    }
+
+    await this.log("TDD", "Running tests...");
+
+    // Fix import in test file to match the component's actual export name
+    await this.fixTestImport();
+
+    let testResult = runTests(this.projectId);
+
+    // If vitest crashed (bad test syntax, missing import), try to repair the test file
+    if (testResult.crashed) {
+      await this.log(
+        "TDD",
+        `Tests crashed: ${testResult.crashError || "unknown error"}`,
+      );
+
+      const repaired = await this.repairTestFile(testResult);
+      if (repaired) {
+        testResult = runTests(this.projectId);
+      }
+
+      if (testResult.crashed) {
+        await this.log(
+          "TDD",
+          "Tests still crashing after repair — removing bad test file",
+        );
+        // Remove the bad test file so it doesn't interfere
+        if (fs.existsSync(testPath)) fs.unlinkSync(testPath);
+        return false;
+      }
+    }
+
+    await this.log(
+      "TDD",
+      `Initial results: ${testResult.passed} passed, ${testResult.failed} failed, ${testResult.total} total`,
+    );
+
+    if (testResult.failed === 0) {
+      await this.log("TDD", "All tests passing!");
+      return true;
+    }
+
+    // Fix failures one at a time
+    let round = 0;
+    while (round < Pipeline.MAX_TEST_FIX_ROUNDS && !this.aborted) {
+      round++;
+
+      const failure = getFirstFailure(testResult);
+      if (!failure) {
+        await this.log("TDD", "All tests passing!");
+        break;
+      }
+
+      await this.log(
+        "TDD",
+        `Round ${round}/${Pipeline.MAX_TEST_FIX_ROUNDS}: fixing "${failure.name}"`,
+      );
+      await this.log(
+        "TDD",
+        `Error: ${failure.error?.slice(0, 300) || "unknown"}`,
+      );
+
+      // Read current component
+      const currentComponent = fs.readFileSync(
+        path.join(outDir, "Component.tsx"),
+        "utf-8",
+      );
+      const currentTest = fs.readFileSync(testPath, "utf-8");
+
+      // Build fix prompt — truncated component + only the failing test + error
+      // Small models struggle with huge prompts; keep it focused.
+      const truncatedComponent = this.truncateForPrompt(currentComponent, 100);
+      const relevantTest = this.extractRelevantTest(currentTest, failure.name);
+
+      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+      userMessage += `Current Component.tsx:\n${truncatedComponent}\n\n`;
+      userMessage += `Failing test (DO NOT MODIFY TESTS — fix the component):\n${relevantTest}\n\n`;
+      userMessage += `FAILING TEST: "${failure.name}"\n`;
+      userMessage += `ERROR:\n${(failure.error || "Test failed").slice(0, 500)}\n\n`;
+      userMessage += `Fix the Component.tsx so this test passes. Output the COMPLETE Component.tsx.`;
+
+      userMessage = this.withCustomInstructions(userMessage);
+      this.warnIfPromptTooLarge(`TDD fix round ${round}`, userMessage);
+
+      const devResult = await runDeveloper(
+        this.model,
+        userMessage,
+        "Component.tsx",
+      );
+
+      if (!devResult.block) {
+        await this.log(
+          "TDD",
+          `Round ${round}: Developer parse failure — skipping`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        // If the component can't be fixed, maybe the test is bad — try fixing the test
+        const testFixed = await this.repairSingleTest(
+          failure,
+          currentComponent,
+          currentTest,
+        );
+        if (testFixed) {
+          testResult = runTests(this.projectId);
+          continue;
+        }
+        break;
+      }
+
+      const { repaired, fixes } = autoRepairOutput(
+        devResult.block.output,
+        "Component.tsx",
+      );
+      if (fixes.length > 0) {
+        await this.log("TDD", `Auto-repaired: ${fixes.join(", ")}`);
+      }
+
+      const validation = validateOutput(repaired, "Component.tsx");
+      if (!validation.valid) {
+        await this.log(
+          "TDD",
+          `Round ${round}: Fix failed validation: ${validation.reason}`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        continue;
+      }
+
+      // Write the fixed component and re-run tests
+      await this.writeOutputFile("Component.tsx", repaired);
+      const newResult = runTests(this.projectId);
+
+      if (newResult.crashed) {
+        await this.log(
+          "TDD",
+          `Round ${round}: Tests crashed after fix — reverting`,
+        );
+        await this.writeOutputFile("Component.tsx", currentComponent);
+        testResult.tests = testResult.tests.filter(
+          (t) => t.name !== failure.name,
+        );
+        continue;
+      }
+
+      if (newResult.failed < testResult.failed) {
+        await this.log(
+          "TDD",
+          `Round ${round}: Fixed! ${newResult.passed} passed, ${newResult.failed} failed`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        testResult = newResult;
+      } else if (newResult.failed >= testResult.failed) {
+        // Fix didn't help or made things worse
+        await this.log(
+          "TDD",
+          `Round ${round}: Fix didn't reduce failures (was ${testResult.failed}, now ${newResult.failed})`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        // If the same test is still failing after 2 component fix attempts,
+        // the test itself might be bad — remove it
+        if (
+          round >= 2 &&
+          newResult.tests.find(
+            (t) => t.name === failure.name && t.status === "fail",
+          )
+        ) {
+          const testFixed = await this.repairSingleTest(
+            failure,
+            repaired,
+            fs.readFileSync(testPath, "utf-8"),
+          );
+          if (testFixed) {
+            testResult = runTests(this.projectId);
+            continue;
+          }
+        }
+        testResult = newResult;
+      }
+
+      if (testResult.failed === 0) break;
+    }
+
+    if (round >= Pipeline.MAX_TEST_FIX_ROUNDS && testResult.failed > 0) {
+      await this.log(
+        "TDD",
+        `Hit max fix rounds (${Pipeline.MAX_TEST_FIX_ROUNDS}) with ${testResult.failed} still failing`,
+      );
+    }
+
+    await this.log(
+      "TDD",
+      `Test QA complete: ${testResult.passed}/${testResult.total} passing after ${round} rounds`,
+    );
+
+    return testResult.failed === 0;
+  }
+
+  /**
+   * Fix the test file import to match the component's actual exported function name.
+   * The test-writer assumes `import Component from "./Component"` but the actual
+   * export might be `export default function PixelArtEditor`.
+   */
+  private async fixTestImport() {
+    const outDir = this.outputDir();
+    const testPath = path.join(outDir, "Component.test.tsx");
+    const componentPath = path.join(outDir, "Component.tsx");
+
+    if (!fs.existsSync(testPath) || !fs.existsSync(componentPath)) return;
+
+    const componentCode = fs.readFileSync(componentPath, "utf-8");
+    const testCode = fs.readFileSync(testPath, "utf-8");
+
+    // Detect the actual export name from the component
+    const exportMatch = componentCode.match(
+      /export\s+default\s+function\s+(\w+)/,
+    );
+    if (!exportMatch) return; // Can't determine — leave as is
+
+    const actualName = exportMatch[1];
+
+    // Fix the import in the test file
+    // Replace: import Component from "./Component" → import ActualName from "./Component"
+    // Also replace: import { Component } from ... → import ActualName from ...
+    let fixed = testCode
+      .replace(
+        /import\s+(\w+)\s+from\s+["']\.\/Component["']/g,
+        `import ${actualName} from "./Component"`,
+      )
+      .replace(
+        /import\s+\{\s*(\w+)\s*\}\s+from\s+["']\.\/Component["']/g,
+        `import ${actualName} from "./Component"`,
+      );
+
+    // Replace usage of the old name with the new one
+    // But only if the test was using a different name
+    const importMatch = testCode.match(
+      /import\s+(\w+)\s+from\s+["']\.\/Component["']/,
+    );
+    if (importMatch && importMatch[1] !== actualName) {
+      const oldName = importMatch[1];
+      // Replace the old component name references in test code (but not in the import line)
+      const lines = fixed.split("\n");
+      fixed = lines
+        .map((line) => {
+          // Skip import lines
+          if (line.match(/^\s*import\s/)) return line;
+          // Replace old name with new name as a whole word
+          return line.replace(new RegExp(`\\b${oldName}\\b`, "g"), actualName);
+        })
+        .join("\n");
+    }
+
+    if (fixed !== testCode) {
+      fs.writeFileSync(testPath, fixed, "utf-8");
+      await this.log("TDD", `Fixed test import: using ${actualName}`);
+    }
+  }
+
+  /**
+   * Repair the test file when vitest crashes (syntax error, bad import, etc.).
+   * Sends the crash error + test file to the LLM to fix.
+   */
+  private async repairTestFile(crashResult: TestRunResult): Promise<boolean> {
+    const outDir = this.outputDir();
+    const testPath = path.join(outDir, "Component.test.tsx");
+
+    if (!fs.existsSync(testPath)) return false;
+
+    const testCode = fs.readFileSync(testPath, "utf-8");
+    const componentCode = fs.existsSync(path.join(outDir, "Component.tsx"))
+      ? fs.readFileSync(path.join(outDir, "Component.tsx"), "utf-8")
+      : "";
+
+    for (
+      let attempt = 1;
+      attempt <= Pipeline.MAX_TEST_REPAIR_ATTEMPTS;
+      attempt++
+    ) {
+      await this.log("TDD", `Repairing test file (attempt ${attempt})...`);
+
+      const REPAIR_PROMPT = `Fix this broken test file. It crashes when run with vitest.
+Rules:
+- Use vitest imports: import { describe, it, expect } from "vitest"
+- Use @testing-library/react: import { render, screen, fireEvent } from "@testing-library/react"
+- Import the component with default import from "./Component"
+- Keep tests simple. No mocking.
+- Output ONLY code. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: Component.test.tsx
+output: |
+  (fixed test code)
+>>END`;
+
+      let userMessage = `The test file crashes with this error:\n${(crashResult.crashError || crashResult.rawOutput.slice(0, 500)).slice(0, 500)}\n\n`;
+      userMessage += `Current test file:\n${this.truncateForPrompt(testCode, 60)}\n\n`;
+      if (componentCode) {
+        // Only show the component's export signature, not the full code
+        const exportLine =
+          componentCode.match(/export\s+default\s+function\s+\w+[^{]*/)?.[0] ||
+          "";
+        userMessage += `Component export: ${exportLine}\n\n`;
+      }
+      userMessage += `Fix the test file so it runs without crashing.`;
+
+      const result = await callOllamaFn(
+        this.model,
+        "qa",
+        REPAIR_PROMPT,
+        userMessage,
+      );
+
+      const parsed = parseTTM(result.text);
+      const block =
+        parsed && "output" in parsed ? (parsed as { output: string }) : null;
+
+      if (!block) {
+        await this.log(
+          "TDD",
+          `Repair attempt ${attempt}: parse failure`,
+          undefined,
+          result.prompt,
+          result.text,
+        );
+        continue;
+      }
+
+      const { repaired } = autoRepairOutput(block.output, "Component.test.tsx");
+      fs.writeFileSync(testPath, repaired, "utf-8");
+
+      // Try running tests again
+      const retryResult = runTests(this.projectId);
+      if (!retryResult.crashed) {
+        await this.log("TDD", "Test file repaired successfully");
+        return true;
+      }
+
+      await this.log(
+        "TDD",
+        `Repair attempt ${attempt}: still crashing — ${retryResult.crashError}`,
+      );
+    }
+
+    return false;
+  }
+
+  /**
+   * When a single test keeps failing after component fixes,
+   * the test itself might be wrong. Remove or fix it.
+   */
+  private async repairSingleTest(
+    failure: { name: string; error?: string },
+    componentCode: string,
+    testCode: string,
+  ): Promise<boolean> {
+    const outDir = this.outputDir();
+    const testPath = path.join(outDir, "Component.test.tsx");
+
+    await this.log(
+      "TDD",
+      `Test "${failure.name}" may be wrong — attempting repair`,
+    );
+
+    const REPAIR_PROMPT = `One test in this file always fails, even after fixing the component.
+The test is probably wrong. Fix the test so it correctly tests the component behavior.
+If the test is testing something impossible, remove it.
+- Output ONLY code. No explanations.
+- Keep all other tests unchanged.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: Component.test.tsx
+output: |
+  (fixed test code)
+>>END`;
+
+    let userMessage = `Failing test: "${failure.name}"\n`;
+    userMessage += `Error: ${(failure.error || "unknown").slice(0, 500)}\n\n`;
+    userMessage += `Component export and key elements:\n${this.truncateForPrompt(componentCode, 40)}\n\n`;
+    userMessage += `Current test file:\n${this.truncateForPrompt(testCode, 60)}\n\n`;
+    userMessage += `Fix or remove the failing test. Keep all passing tests.`;
+
+    const result = await callOllamaFn(
+      this.model,
+      "qa",
+      REPAIR_PROMPT,
+      userMessage,
+    );
+
+    const parsed = parseTTM(result.text);
+    const block =
+      parsed && "output" in parsed ? (parsed as { output: string }) : null;
+
+    if (!block) {
+      await this.log(
+        "TDD",
+        "Test repair: parse failure",
+        undefined,
+        result.prompt,
+        result.text,
+      );
+      return false;
+    }
+
+    const { repaired } = autoRepairOutput(block.output, "Component.test.tsx");
+    fs.writeFileSync(testPath, repaired, "utf-8");
+
+    const retryResult = runTests(this.projectId);
+    if (retryResult.crashed) {
+      // Repair made things worse — restore original
+      fs.writeFileSync(testPath, testCode, "utf-8");
+      await this.log("TDD", "Test repair made things worse — reverted");
+      return false;
+    }
+
+    await this.log("TDD", "Test repaired successfully");
+    return true;
   }
 
   // ─────────────────────────────────────────────
@@ -1314,62 +1941,20 @@ export default function Component() {
 
     if (component.trim().length < 20) return;
 
-    await this.log("QA", "Running quality review of full output...");
+    await this.log("QA", "Running structural quality checks...");
 
-    // Phase A: Programmatic quality checks (reliable, catches what LLMs miss)
+    // Programmatic-only quality checks (reliable, fast, no model risk)
+    // Skip LLM holistic review entirely — small models hallucinate phantom
+    // issues and introduce bugs while "fixing" them. The TDD tests are the
+    // primary QA; structural checks catch the rest.
     const structuralIssues = this.checkOutputQuality(component);
 
-    // If no structural issues, skip the expensive LLM review entirely
-    // Small models tend to find phantom issues and introduce bugs while "fixing" them
     if (structuralIssues.length === 0) {
-      await this.log("QA", "PASS — no structural issues, skipping LLM review");
+      await this.log("QA", "PASS — no structural issues found");
       return;
     }
 
-    // Phase B: LLM holistic review (may find issues the programmatic checks miss)
-    const projectFiles: { path: string; content: string }[] = [];
-    for (const file of TEMPLATE_FILES) {
-      const content = readFile(file);
-      if (content.trim().length > 20) {
-        projectFiles.push({ path: file, content });
-      }
-    }
-
-    let llmIssues: string[] = [];
-    if (projectFiles.length > 0) {
-      const result = await runHolisticReview(
-        this.model,
-        this.projectName,
-        this.projectDescription,
-        projectFiles,
-      );
-
-      await this.log(
-        "QA",
-        `LLM review: ${result.verdict} (${result.tokens} tokens, ${result.durationMs}ms)`,
-        undefined,
-        result.prompt,
-        result.raw,
-      );
-
-      if (result.verdict === "REWORK" && result.issues.length > 0) {
-        llmIssues = result.issues;
-      }
-    }
-
-    // Merge all issues (programmatic + LLM)
-    const allIssues: { file: string; issue: string }[] = [
-      ...structuralIssues,
-      ...llmIssues.map((iss) => ({ file: "unknown", issue: iss })),
-    ];
-
-    if (allIssues.length === 0) {
-      await this.log(
-        "QA",
-        "Quality review PASS — no structural or visual issues found",
-      );
-      return;
-    }
+    const allIssues = structuralIssues;
 
     await this.log(
       "QA",
@@ -1379,42 +1964,11 @@ export default function Component() {
       await this.log("QA", `[${file}] ${issue}`);
     }
 
-    // Group issues by file
+    // Group issues by file (all are programmatic with known files)
     const issuesByFile: Record<string, string[]> = {};
     for (const { file, issue } of allIssues) {
-      if (file === "unknown") {
-        // LLM issues — try to route by keywords
-        const issueLower = issue.toLowerCase();
-        for (const fp of FILE_ORDER) {
-          const keywords: Record<string, string[]> = {
-            "Component.tsx": [
-              "component",
-              "jsx",
-              "tsx",
-              "react",
-              "render",
-              "style",
-              "layout",
-              "function",
-              "event",
-              "click",
-              "state",
-              "hook",
-              "element",
-              "html",
-              "css",
-              "button",
-            ],
-          };
-          if ((keywords[fp] || []).some((kw) => issueLower.includes(kw))) {
-            if (!issuesByFile[fp]) issuesByFile[fp] = [];
-            issuesByFile[fp].push(issue);
-          }
-        }
-      } else {
-        if (!issuesByFile[file]) issuesByFile[file] = [];
-        issuesByFile[file].push(issue);
-      }
+      if (!issuesByFile[file]) issuesByFile[file] = [];
+      issuesByFile[file].push(issue);
     }
 
     // Fix each file that has issues
@@ -1427,7 +1981,7 @@ export default function Component() {
       if (!existingContent || existingContent.trim().length < 20) continue;
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
+      userMessage += `Current ${filePath}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
       userMessage += `A quality review found these issues:\n`;
       userMessage += fileIssues.map((iss, i) => `${i + 1}. ${iss}`).join("\n");
       userMessage += `\n\nFix ALL of these issues and rewrite the COMPLETE ${filePath} file. Keep all working functionality intact.`;
@@ -1572,7 +2126,7 @@ export default function Component() {
       }
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${resolvedFile}:\n${existingContent}\n\n`;
+      userMessage += `Current ${resolvedFile}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
       userMessage += `QA found this issue:\nProblem: ${problem}\nFix: ${fix}\n\n`;
       userMessage += `Apply ONLY this fix. Keep everything else exactly the same. Rewrite the COMPLETE ${resolvedFile} file.`;
 
@@ -1673,6 +2227,7 @@ export default function Component() {
     const FEEDBACK_SYSTEM_PROMPT = `Fix the issues in this React component. Do NOT rewrite or replace it.
 Keep same name, structure, features. Only change what's broken.
 Must have: export default function, return with JSX, inline styles.
+Output ONLY code. No comments in code. No explanations before or after code.
 
 Reply:
 >>RESULT
@@ -1697,7 +2252,7 @@ output: |
       );
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `EXISTING Component.tsx (edit this, do NOT replace):\n\`\`\`tsx\n${currentContent}\n\`\`\`\n\n`;
+      userMessage += `EXISTING Component.tsx (edit this, do NOT replace):\n${this.truncateForPrompt(currentContent, 100)}\n\n`;
       userMessage += `USER FEEDBACK: "${feedback}"\n\n`;
       userMessage += `Output the COMPLETE corrected Component.tsx.`;
 
@@ -1880,7 +2435,7 @@ output: |
 
       let userMessage = `Project: ${this.projectName}\n\n`;
       if (existingContent) {
-        userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
+        userMessage += `Current ${filePath}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
       }
       userMessage += `Fix these bugs and rewrite the COMPLETE ${filePath} file:\n${fixList}`;
 

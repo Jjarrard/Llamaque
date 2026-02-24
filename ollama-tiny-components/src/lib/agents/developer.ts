@@ -12,6 +12,7 @@ const SYSTEM_PROMPTS: Record<string, string> = {
 - React hooks for state (useState, useEffect, useRef)
 - Must return JSX
 - Real working code, no placeholders
+- Output ONLY code. No comments in code. No explanations before or after code.
 
 Reply:
 >>RESULT
@@ -30,6 +31,7 @@ const DEFAULT_PROMPT = `Write a complete React component.
 - export default function, inline styles only
 - Real working code, no placeholders
 - Must return JSX
+- Output ONLY code. No comments in code. No explanations before or after code.
 
 Reply:
 >>RESULT
