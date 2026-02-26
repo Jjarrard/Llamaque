@@ -25,9 +25,13 @@ if (!globalForDb._sqlite) {
 
 export const db = drizzle(globalForDb._sqlite, { schema });
 
-// Run migrations once per process (creates tables on first run)
+// Run migrations once per process (creates tables on first run, safe to re-run)
 if (!globalForDb._migrated) {
-  migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  try {
+    migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
+  } catch {
+    // Tables may already exist on pre-migration installs - that's fine
+  }
   globalForDb._migrated = true;
 
   // Startup sweep: reset any projects stuck in "running" state from a previous crash

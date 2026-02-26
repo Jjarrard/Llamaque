@@ -2,8 +2,8 @@ import { NextRequest, NextResponse } from "next/server";
 import fs from "fs";
 import path from "path";
 import { db } from "@/db";
-import { projects } from "@/db/schema";
-import { eq } from "drizzle-orm";
+import { projects, tasks } from "@/db/schema";
+import { eq, and, isNotNull } from "drizzle-orm";
 
 /**
  * GET /api/projects/[id]/download — Download project output as a zip file
@@ -24,34 +24,48 @@ export async function GET(
   }
 
   const outputDir = path.join(process.cwd(), "output", id);
-  if (!fs.existsSync(outputDir)) {
-    return NextResponse.json({ error: "No output files yet" }, { status: 404 });
-  }
 
   // Build a simple zip manually (using deflate-less zip for simplicity)
-  // Scan the output directory for all files to include
   const fileBuffers: { name: string; data: Buffer }[] = [];
 
-  const scanDir = (dir: string, prefix: string = "") => {
-    const entries = fs.readdirSync(dir, { withFileTypes: true });
-    for (const entry of entries) {
-      if (entry.name.startsWith(".") || entry.name.endsWith(".bak")) continue;
-      const fullPath = path.join(dir, entry.name);
-      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
-      if (entry.isDirectory()) {
-        scanDir(fullPath, relativePath);
-      } else {
-        // Skip test files from the download
-        if (entry.name.includes(".test.")) continue;
-        fileBuffers.push({
-          name: relativePath,
-          data: fs.readFileSync(fullPath),
-        });
+  if (fs.existsSync(outputDir)) {
+    // Read from disk (preferred - pipeline writes here during execution)
+    const scanDir = (dir: string, prefix: string = "") => {
+      const entries = fs.readdirSync(dir, { withFileTypes: true });
+      for (const entry of entries) {
+        if (entry.name.startsWith(".") || entry.name.endsWith(".bak")) continue;
+        const fullPath = path.join(dir, entry.name);
+        const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name;
+        if (entry.isDirectory()) {
+          scanDir(fullPath, relativePath);
+        } else {
+          if (entry.name.includes(".test.")) continue;
+          fileBuffers.push({
+            name: relativePath,
+            data: fs.readFileSync(fullPath),
+          });
+        }
       }
+    };
+    scanDir(outputDir);
+  } else {
+    // Fall back to DB task outputs (fresh clone, no output/ folder on disk)
+    const completedTasks = await db.query.tasks.findMany({
+      where: and(
+        eq(tasks.projectId, projectId),
+        isNotNull(tasks.filePath),
+        isNotNull(tasks.output),
+      ),
+    });
+    for (const task of completedTasks) {
+      if (!task.filePath || !task.output) continue;
+      if (task.filePath.includes(".test.")) continue;
+      fileBuffers.push({
+        name: task.filePath,
+        data: Buffer.from(task.output, "utf-8"),
+      });
     }
-  };
-
-  scanDir(outputDir);
+  }
 
   if (fileBuffers.length === 0) {
     return NextResponse.json(

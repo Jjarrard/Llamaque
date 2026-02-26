@@ -1,4 +1,4 @@
-CREATE TABLE `logs` (
+CREATE TABLE IF NOT EXISTS `logs` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`project_id` integer NOT NULL,
 	`task_id` integer,
@@ -10,7 +10,7 @@ CREATE TABLE `logs` (
 	FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE TABLE `projects` (
+CREATE TABLE IF NOT EXISTS `projects` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`name` text NOT NULL,
 	`description` text NOT NULL,
@@ -22,7 +22,7 @@ CREATE TABLE `projects` (
 	`created_at` integer NOT NULL
 );
 --> statement-breakpoint
-CREATE TABLE `references` (
+CREATE TABLE IF NOT EXISTS `references` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`project_id` integer NOT NULL,
 	`file_path` text NOT NULL,
@@ -31,7 +31,7 @@ CREATE TABLE `references` (
 	FOREIGN KEY (`project_id`) REFERENCES `projects`(`id`) ON UPDATE no action ON DELETE no action
 );
 --> statement-breakpoint
-CREATE TABLE `tasks` (
+CREATE TABLE IF NOT EXISTS `tasks` (
 	`id` integer PRIMARY KEY AUTOINCREMENT NOT NULL,
 	`project_id` integer NOT NULL,
 	`parent_id` integer,
