@@ -55,3 +55,7 @@ Run stages individually or retry any with the refresh button on the stage tracke
 npm run build   # production build
 npm test        # run tests (vitest)
 ```
+
+## Disclaimer
+
+This software is provided as-is, without warranty of any kind. Use at your own risk.

@@ -1193,7 +1193,8 @@ export default function ProjectPage() {
           )}
           {running ? (
             <button className={styles.stopBtn} onClick={handleStop}>
-              ■ Stop
+              <span className={styles.stopIcon} />
+              Stop
             </button>
           ) : (
             <>
@@ -1247,7 +1248,7 @@ export default function ProjectPage() {
                 <span className={styles.stageIcon}>
                   {state === "done" && "✓"}
                   {state === "active" && (
-                    <span className={styles.stageSpinner}>●</span>
+                    <span className={styles.stageSpinner} />
                   )}
                   {state === "pending" && "○"}
                   {state === "approval" && "⚠"}

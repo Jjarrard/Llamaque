@@ -66,18 +66,31 @@
 }
 
 .stopBtn {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.45rem;
   background: var(--danger);
   color: white;
-  padding: 0.5rem 1.2rem;
+  padding: 0.5rem 1.1rem;
   border-radius: var(--radius);
   font-weight: 500;
   font-size: 0.85rem;
   transition: background 0.2s;
   border: none;
+  cursor: pointer;
 }
 
 .stopBtn:hover {
   background: #dc2626;
+}
+
+.stopIcon {
+  display: inline-block;
+  width: 0.6rem;
+  height: 0.6rem;
+  background: currentColor;
+  border-radius: 1px;
+  flex-shrink: 0;
 }
 
 .badge {
@@ -1093,8 +1106,20 @@
 }
 
 .stageSpinner {
-  animation: pulse 1.2s infinite;
-  font-size: 0.65rem;
+  display: inline-block;
+  width: 0.72rem;
+  height: 0.72rem;
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  border-radius: 50%;
+  animation: spin 0.65s linear infinite;
+  flex-shrink: 0;
+}
+
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
 }
 
 .stageLabel {
