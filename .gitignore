@@ -1,5 +1,4 @@
-# Monorepo root .gitignore
-# Covers ollama-tiny-html/ and ollama-tiny-components/
+# Root .gitignore — covers llamaque/
 
 # dependencies
 node_modules/
@@ -10,6 +9,10 @@ out/
 
 # production
 build/
+
+# llamaque — local data and generated output
+data/
+output/
 
 # misc
 .DS_Store
@@ -30,12 +33,3 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
-
-# pnp
-.pnp
-.pnp.*
-.yarn/*
-!.yarn/patches
-!.yarn/plugins
-!.yarn/releases
-!.yarn/versions
