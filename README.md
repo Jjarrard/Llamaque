@@ -14,6 +14,7 @@ Pull a model:
 ```bash
 ollama pull qwen2.5-coder:14b
 ```
+NOTE: This model makes a 24GB M4 Pro pretty hot
 
 Any model works. Smaller ones (3B-8B) are faster, larger ones produce better code.
 
