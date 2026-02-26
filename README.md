@@ -21,7 +21,7 @@ Any model works. Smaller ones (3B-8B) are faster, larger ones produce better cod
 
 ```bash
 cd llamaque
-npm install --legacy-peer-deps
+npm install
 npm run dev
 ```
 
