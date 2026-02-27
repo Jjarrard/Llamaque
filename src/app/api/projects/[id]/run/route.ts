@@ -74,6 +74,12 @@ export async function POST(
     );
   }
 
+  // Mark project as running immediately so the client sees it on the next poll
+  await db
+    .update(projects)
+    .set({ status: "running" })
+    .where(eq(projects.id, projectId));
+
   // Start pipeline in background
   const pipeline = new Pipeline(
     projectId,

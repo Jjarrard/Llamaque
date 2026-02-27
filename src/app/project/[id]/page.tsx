@@ -441,6 +441,7 @@ export default function ProjectPage() {
   const [running, setRunning] = useState(false);
   const [pipelineSessionActive, setPipelineSessionActive] = useState(false);
   const consecutiveNotRunningRef = useRef(0);
+  const effectiveRunning = running || pipelineSessionActive;
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [expandedLogs, setExpandedLogs] = useState<
     Record<number, LogDetail | null>
@@ -689,7 +690,7 @@ export default function ProjectPage() {
   // and do a final fetch when running transitions to false
   const prevRunningRef = useRef(false);
   useEffect(() => {
-    if (running) {
+    if (effectiveRunning) {
       prevRunningRef.current = true;
       const interval = setInterval(fetchProject, 2000);
       return () => clearInterval(interval);
@@ -698,7 +699,7 @@ export default function ProjectPage() {
       prevRunningRef.current = false;
       fetchProject();
     }
-  }, [running, fetchProject]);
+  }, [effectiveRunning, fetchProject]);
 
   const handleRun = async (stage: string = "all", breakdownDepth?: number) => {
     setError(null);
@@ -897,8 +898,6 @@ export default function ProjectPage() {
   const hasWorkRemaining = taskList.some((t) =>
     ["pending", "ready"].includes(t.status),
   );
-
-  const effectiveRunning = running || pipelineSessionActive;
 
   const completedStages: string[] = project
     ? JSON.parse(project.completedStages || "[]")
