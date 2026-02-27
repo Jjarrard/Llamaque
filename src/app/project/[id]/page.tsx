@@ -1310,42 +1310,53 @@ export default function ProjectPage() {
       </div>
 
       {/* ── Feedback Input Panel ── */}
-      {showFeedbackInput && !running && (
+      {showFeedbackInput && (
         <div className={styles.feedbackPanel}>
           <div className={styles.feedbackHeader}>
             <span className={styles.feedbackTitle}>✎ Feedback</span>
-            <button
-              className={styles.feedbackCloseBtn}
-              onClick={() => setShowFeedbackInput(false)}
-              title="Close"
-            >
-              ✕
-            </button>
+            {!running && (
+              <button
+                className={styles.feedbackCloseBtn}
+                onClick={() => setShowFeedbackInput(false)}
+                title="Close"
+              >
+                ✕
+              </button>
+            )}
           </div>
-          <textarea
-            className={styles.feedbackTextarea}
-            value={feedbackText}
-            onChange={(e) => setFeedbackText(e.target.value)}
-            placeholder="Describe what you'd like to change, fix, or improve..."
-            rows={4}
-            autoFocus
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                handleSubmitFeedback();
-              }
-            }}
-          />
-          <div className={styles.feedbackActions}>
-            <span className={styles.feedbackHint}>Enter to submit · Shift+Enter for new line</span>
-            <button
-              className={styles.feedbackSubmitBtn}
-              onClick={handleSubmitFeedback}
-              disabled={!feedbackText.trim()}
-            >
-              Submit Feedback
-            </button>
-          </div>
+          {running && activeStage === "feedback" ? (
+            <div className={styles.feedbackRunning}>
+              <span className={styles.stageSpinner} />
+              Running feedback pass...
+            </div>
+          ) : (
+            <>
+              <textarea
+                className={styles.feedbackTextarea}
+                value={feedbackText}
+                onChange={(e) => setFeedbackText(e.target.value)}
+                placeholder="Describe what you'd like to change, fix, or improve..."
+                rows={4}
+                autoFocus
+                onKeyDown={(e) => {
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    handleSubmitFeedback();
+                  }
+                }}
+              />
+              <div className={styles.feedbackActions}>
+                <span className={styles.feedbackHint}>Enter to submit · Shift+Enter for new line</span>
+                <button
+                  className={styles.feedbackSubmitBtn}
+                  onClick={handleSubmitFeedback}
+                  disabled={!feedbackText.trim()}
+                >
+                  Submit Feedback
+                </button>
+              </div>
+            </>
+          )}
         </div>
       )}
 

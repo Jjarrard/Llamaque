@@ -1260,6 +1260,15 @@
   opacity: 0.6;
 }
 
+.feedbackRunning {
+  display: flex;
+  align-items: center;
+  gap: 0.65rem;
+  padding: 1rem 0 0.5rem;
+  color: var(--muted);
+  font-size: 0.88rem;
+}
+
 .feedbackActions {
   display: flex;
   align-items: center;
