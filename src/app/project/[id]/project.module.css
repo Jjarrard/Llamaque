@@ -136,6 +136,17 @@
   color: var(--warning);
 }
 
+.badgeReview {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.6rem;
+  border-radius: 999px;
+  font-weight: 500;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
+
 .badgeDone {
   font-size: 0.75rem;
   padding: 0.2rem 0.6rem;

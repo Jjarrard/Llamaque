@@ -647,7 +647,7 @@ export default function Component() {
   private async pauseAndDone() {
     await db
       .update(projects)
-      .set({ status: "paused" })
+      .set({ status: "review" })
       .where(eq(projects.id, this.projectId));
     this.emit("pipeline_done", { projectId: this.projectId });
   }

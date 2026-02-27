@@ -210,7 +210,16 @@
   background: rgba(234, 179, 8, 0.15);
   color: var(--warning);
 }
-
+.badgeReview {
+  font-size: 0.75rem;
+  padding: 0.2rem 0.7rem;
+  border-radius: 999px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  background: rgba(59, 130, 246, 0.15);
+  color: #60a5fa;
+}
 .badgeDone {
   font-size: 0.75rem;
   padding: 0.2rem 0.6rem;

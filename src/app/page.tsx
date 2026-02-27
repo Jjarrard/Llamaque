@@ -19,6 +19,7 @@ const badgeClass: Record<string, string> = {
   pending: styles.badgePending,
   running: styles.badgeRunning,
   paused: styles.badgePaused,
+  review: styles.badgeReview,
   done: styles.badgeDone,
 };
 

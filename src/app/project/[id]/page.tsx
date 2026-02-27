@@ -178,6 +178,7 @@ const badgeClass: Record<string, string> = {
   pending: styles.badgePending,
   running: styles.badgeRunning,
   paused: styles.badgePaused,
+  review: styles.badgeReview,
   done: styles.badgeDone,
 };
 
@@ -204,6 +205,15 @@ function deriveCurrentStatus(
       phase: "done",
       color: "success",
       progressPct: 100,
+    };
+  }
+
+  if (projectStatus === "review" && !running) {
+    return {
+      label: "Stage complete — review and continue when ready",
+      phase: "review",
+      color: "warning",
+      progressPct,
     };
   }
 
@@ -242,6 +252,14 @@ function deriveCurrentStatus(
   }
 
   if (!running && totalTasks > 0) {
+    if (projectStatus === "review") {
+      return {
+        label: `Stage complete — ${doneTasks}/${totalTasks} tasks done`,
+        phase: "review",
+        color: "warning",
+        progressPct,
+      };
+    }
     return {
       label: `Paused — ${doneTasks}/${totalTasks} tasks done`,
       phase: "paused",
