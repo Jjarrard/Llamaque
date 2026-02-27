@@ -11,8 +11,8 @@ out/
 build/
 
 # llamaque — local data and generated output
-data/
-output/
+/data/
+/output/
 
 # misc
 .DS_Store
