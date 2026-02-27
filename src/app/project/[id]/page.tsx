@@ -1149,8 +1149,13 @@ export default function ProjectPage() {
               {project.name}
             </h1>
           )}
-          <span className={badgeClass[project.status] || styles.badgePending}>
-            {project.status}
+          <span
+            className={
+              badgeClass[effectiveRunning ? "running" : project.status] ||
+              styles.badgePending
+            }
+          >
+            {effectiveRunning ? "running" : project.status}
           </span>
         </div>
         {editingDesc ? (
