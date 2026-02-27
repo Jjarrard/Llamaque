@@ -8,6 +8,7 @@ import {
   deriveCurrentStatus,
   deriveStageStates,
   PIPELINE_STAGES,
+  deriveIsRunning,
   type StageKey,
   type StageState,
 } from "@/lib/status";
@@ -278,19 +279,9 @@ export default function ProjectPage() {
       const data = await res.json();
       setProject(data.project);
       setTaskList(data.tasks);
-      // Derive running from project status OR active task statuses.
-      // This handles the race where the pipeline hasn't set status=running
-      // in the DB yet but tasks are already executing.
-      const activeStatuses = [
-        "executing",
-        "decomposing",
-        "qa_check",
-        "editing",
-      ];
-      const hasActiveTasks = data.tasks.some((t: Task) =>
-        activeStatuses.includes(t.status),
-      );
-      const isNowRunning = data.project.status === "running" || hasActiveTasks;
+      // Use the shared deriveIsRunning logic (also covered by unit tests)
+      // so any fix here is automatically validated.
+      const isNowRunning = deriveIsRunning(data.project.status, data.tasks);
       setRunning(isNowRunning);
       if (isNowRunning) {
         consecutiveNotRunningRef.current = 0;

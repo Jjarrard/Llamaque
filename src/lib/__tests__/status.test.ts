@@ -2,6 +2,8 @@ import { describe, it, expect } from "vitest";
 import {
   deriveCurrentStatus,
   deriveStageStates,
+  deriveIsRunning,
+  ACTIVE_TASK_STATUSES,
   type TaskLike,
 } from "@/lib/status";
 
@@ -360,4 +362,93 @@ describe("deriveStageStates", () => {
       null, // no explicit hint — fallback picker must find 'feedback'
     );
     expect(states.feedback).toBe("active");
-  });});
+  });
+});
+
+// ─── deriveIsRunning ──────────────────────────────────────────────────────────
+// These tests guard the bug where "PAUSED" appeared while TDD was executing.
+// TDD never sets tasks to active statuses (tasks stay "ready"), so the ONLY
+// running signal is project.status === "running". This logic was previously
+// inline and untested in page.tsx.
+
+describe("deriveIsRunning", () => {
+  // ── TDD-phase scenario (the exact bug) ─────────────────────────────────────
+
+  it("TDD phase: true when project.status='running' even with all tasks ready", () => {
+    // generateTests() never changes task statuses — tasks stay "ready" throughout.
+    // The running signal fully depends on project.status being "running".
+    // Without this test, the TDD-phase PAUSED bug would not have been caught.
+    const tasks = [task("ready"), task("ready"), task("ready"), task("done")];
+    expect(deriveIsRunning("running", tasks)).toBe(true);
+  });
+
+  it("TDD phase: false when project.status='paused' and tasks all ready", () => {
+    // After a TDD error, the catch handler sets status='paused' but tasks stay
+    // 'ready' (only executing/decomposing/qa_check/editing are reset, none of
+    // which TDD ever uses). UI should correctly show paused.
+    const tasks = [task("ready"), task("ready"), task("done")];
+    expect(deriveIsRunning("paused", tasks)).toBe(false);
+  });
+
+  it("TDD phase: false when project.status='review' and tasks all ready", () => {
+    // Between manual stage runs the DB can hold 'review'. Tasks are still
+    // 'ready', but with no active run the UI should NOT show running.
+    expect(deriveIsRunning("review", [task("ready"), task("done")])).toBe(false);
+  });
+
+  // ── Task-status fallback (execute / decompose / qa phases) ─────────────────
+
+  it("true when a task is executing even if project.status is not yet 'running'", () => {
+    // Race: the DB status update may lag behind task status changes.
+    expect(deriveIsRunning("pending", [task("executing")])).toBe(true);
+  });
+
+  it("true when a task is decomposing", () => {
+    expect(deriveIsRunning("review", [task("decomposing"), task("ready")])).toBe(true);
+  });
+
+  it("true when a task is qa_check", () => {
+    expect(deriveIsRunning("paused", [task("qa_check")])).toBe(true);
+  });
+
+  it("true when a task is editing", () => {
+    expect(deriveIsRunning("review", [task("editing")])).toBe(true);
+  });
+
+  // ── Not-running states ──────────────────────────────────────────────────────
+
+  it("false when project is done and no active tasks", () => {
+    expect(deriveIsRunning("done", [task("done"), task("done")])).toBe(false);
+  });
+
+  it("false when project is pending with no tasks (initial state)", () => {
+    expect(deriveIsRunning("pending", [])).toBe(false);
+  });
+
+  it("false when project is paused and all tasks are ready or done", () => {
+    expect(
+      deriveIsRunning("paused", [task("ready"), task("ready"), task("done")]),
+    ).toBe(false);
+  });
+
+  // ── ACTIVE_TASK_STATUSES constant completeness ──────────────────────────────
+
+  it("every status in ACTIVE_TASK_STATUSES triggers isRunning=true", () => {
+    for (const s of ACTIVE_TASK_STATUSES) {
+      expect(
+        deriveIsRunning("paused", [task(s)]),
+        `status "${s}" should trigger isRunning`,
+      ).toBe(true);
+    }
+  });
+
+  it("'ready' is NOT in ACTIVE_TASK_STATUSES — it means queued, not actively processing", () => {
+    // This is the heart of the TDD bug: tasks are "ready" during TDD but that
+    // does NOT mean the pipeline is running. Only project.status="running" does.
+    expect((ACTIVE_TASK_STATUSES as readonly string[]).includes("ready")).toBe(false);
+  });
+
+  it("'stuck' is NOT in ACTIVE_TASK_STATUSES", () => {
+    expect((ACTIVE_TASK_STATUSES as readonly string[]).includes("stuck")).toBe(false);
+  });
+});

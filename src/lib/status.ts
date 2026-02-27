@@ -10,6 +10,46 @@ export type TaskLike = {
   parentId: number | null;
 };
 
+/**
+ * Task statuses that indicate the pipeline is actively doing work on a task.
+ * Used by deriveIsRunning as a task-status fallback when the DB project status
+ * isn't yet "running" (brief race on pipeline start) or to double-check that
+ * active work is happening even if the DB field is stale.
+ *
+ * NOTE: "ready" is intentionally NOT in this list — features sit in "ready"
+ * during TDD (test-generation) and during early breakdown phases.  The "ready"
+ * status means "queued for work", not "actively being processed".  The
+ * presence of "ready" tasks alone does NOT mean the pipeline is running.
+ */
+export const ACTIVE_TASK_STATUSES = [
+  "executing",
+  "decomposing",
+  "qa_check",
+  "editing",
+] as const;
+
+/**
+ * Determine whether the pipeline is currently active, given the project status
+ * stored in the DB and the latest task list.
+ *
+ * Rules (in priority order):
+ * 1. If project.status === "running" → running (source of truth for stages
+ *    like TDD where no individual task is ever set to an active status).
+ * 2. If any task has an active status (executing / decomposing / qa_check /
+ *    editing) → running (task-level fallback for the race where the DB hasn't
+ *    been updated yet but work is visibly in progress).
+ * 3. Otherwise → not running.
+ */
+export function deriveIsRunning(
+  projectStatus: string,
+  taskList: Pick<TaskLike, "status">[],
+): boolean {
+  if (projectStatus === "running") return true;
+  return taskList.some((t) =>
+    (ACTIVE_TASK_STATUSES as readonly string[]).includes(t.status),
+  );
+}
+
 export type StatusResult = {
   label: string;
   phase: string;
