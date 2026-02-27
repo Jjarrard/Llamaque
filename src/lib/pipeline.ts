@@ -54,6 +54,7 @@ import { validateOutput, autoRepairOutput } from "@/lib/validate";
 import { runTests, getFirstFailure, TestRunResult } from "@/lib/test-runner";
 import { callOllama as callOllamaFn } from "@/lib/ollama";
 import { isVagueOrCircular, extractReferences, parseTTM } from "@/lib/protocol";
+import { getTasksForStep, getUncoveredTasks } from "@/lib/execute-utils";
 import fs from "fs";
 import path from "path";
 
@@ -1112,18 +1113,20 @@ export default function Component() {
       if (this.aborted) break;
       const req = requirements[i];
 
-      // Mark the corresponding task(s) as executing NOW (not all upfront)
-      // Spread tasks across requirements so each step shows 1 active task
-      const tasksForThisStep = this.getTasksForStep(
+      // Mark EXACTLY ONE task as executing for this step so the UI
+      // never shows concurrent executing tasks. The display task is always
+      // the first in the step's task group (or the last available task).
+      const tasksForThisStep = getTasksForStep(
         i,
         requirements.length,
         taskGroup,
       );
-      for (const task of tasksForThisStep) {
-        await this.setStatus(task.id, "executing");
+      const displayTask = tasksForThisStep[0];
+      if (displayTask) {
+        await this.setStatus(displayTask.id, "executing");
         this.emit("task_started", {
-          taskId: task.id,
-          description: task.description,
+          taskId: displayTask.id,
+          description: displayTask.description,
           agent: "developer",
         });
       }
@@ -1264,6 +1267,23 @@ export default function Component() {
       }
     }
 
+    // Mark any tasks that were never individually stepped through as done.
+    // This happens when taskGroup.length > requirements.length.
+    const finalOutput = this.getCurrentFileContent(filePath) || "";
+    const uncovered = getUncoveredTasks(requirements.length, taskGroup);
+    for (const task of uncovered) {
+      const current = await db.query.tasks.findFirst({
+        where: eq(tasks.id, task.id),
+      });
+      if (current && current.status !== "done") {
+        await db
+          .update(tasks)
+          .set({ output: finalOutput, filePath })
+          .where(eq(tasks.id, task.id));
+        await this.completeTask(current);
+      }
+    }
+
     // Phase C: Final QA on the accumulated file
     const finalContent = this.getCurrentFileContent(filePath);
     if (!finalContent || finalContent.trim().length < 30) {
@@ -1353,24 +1373,6 @@ export default function Component() {
    * Distribute tasks across requirement steps for sequential UI updates.
    * Each step gets at least 1 task; extra tasks go to earlier steps.
    */
-  private getTasksForStep(
-    stepIndex: number,
-    totalSteps: number,
-    taskGroup: Task[],
-  ): Task[] {
-    if (totalSteps === 0) return taskGroup;
-    if (taskGroup.length <= totalSteps) {
-      // 1:1 mapping or fewer tasks than steps
-      return stepIndex < taskGroup.length ? [taskGroup[stepIndex]] : [];
-    }
-    // More tasks than steps: distribute evenly
-    const perStep = Math.floor(taskGroup.length / totalSteps);
-    const remainder = taskGroup.length % totalSteps;
-    const start = stepIndex * perStep + Math.min(stepIndex, remainder);
-    const count = perStep + (stepIndex < remainder ? 1 : 0);
-    return taskGroup.slice(start, start + count);
-  }
-
   private async applyDeterministicOpsPrepass(
     filePath: string,
     _requirements: string[],
