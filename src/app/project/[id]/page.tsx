@@ -1330,13 +1330,14 @@ export default function ProjectPage() {
             rows={4}
             autoFocus
             onKeyDown={(e) => {
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) {
+              if (e.key === "Enter" && !e.shiftKey) {
+                e.preventDefault();
                 handleSubmitFeedback();
               }
             }}
           />
           <div className={styles.feedbackActions}>
-            <span className={styles.feedbackHint}>⌘+Enter to submit</span>
+            <span className={styles.feedbackHint}>Enter to submit · Shift+Enter for new line</span>
             <button
               className={styles.feedbackSubmitBtn}
               onClick={handleSubmitFeedback}
