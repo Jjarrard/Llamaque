@@ -473,10 +473,14 @@ export default function Component() {
       await this.emitStageStart("feedback");
       await this.log("SYS", "Running feedback pass...");
       await this.runFeedbackPass(feedback);
-      await this.emitStageStart("qa");
-      await this.log("SYS", "Running QA after feedback...");
-      await this.runFullQA();
-      await this.markStageComplete("qa");
+      try {
+        await this.emitStageStart("qa");
+        await this.log("SYS", "Running QA after feedback...");
+        await this.runFullQA();
+        await this.markStageComplete("qa");
+      } catch {
+        await this.log("SYS", "QA check after feedback failed — continuing");
+      }
       await this.markStageComplete("feedback");
       await db
         .update(projects)

@@ -186,6 +186,7 @@ function deriveCurrentStatus(
   taskList: Task[],
   projectStatus: string,
   running: boolean,
+  activeStage: string | null = null,
 ): {
   label: string;
   phase: string;
@@ -288,6 +289,25 @@ function deriveCurrentStatus(
   }
 
   if (running) {
+    if (activeStage) {
+      const stageLabels: Record<string, string> = {
+        architect: "Architect — planning file structure...",
+        decompose: "Decomposing — breaking idea into epics...",
+        breakdown: "Breakdown — creating tasks...",
+        tdd: "TDD — writing tests...",
+        execute: "Execute — writing code...",
+        qa: "QA — reviewing output...",
+        feedback: "Feedback — applying changes...",
+      };
+      if (stageLabels[activeStage]) {
+        return {
+          label: stageLabels[activeStage],
+          phase: activeStage,
+          color: "accent",
+          progressPct,
+        };
+      }
+    }
     return {
       label: `Running — ${doneTasks}/${totalTasks} tasks done`,
       phase: "running",
@@ -401,6 +421,8 @@ export default function ProjectPage() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
+  const [pipelineSessionActive, setPipelineSessionActive] = useState(false);
+  const consecutiveNotRunningRef = useRef(0);
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [expandedLogs, setExpandedLogs] = useState<
     Record<number, LogDetail | null>
@@ -479,7 +501,17 @@ export default function ProjectPage() {
       const hasActiveTasks = data.tasks.some((t: Task) =>
         activeStatuses.includes(t.status),
       );
-      setRunning(data.project.status === "running" || hasActiveTasks);
+      const isNowRunning = data.project.status === "running" || hasActiveTasks;
+      setRunning(isNowRunning);
+      if (isNowRunning) {
+        consecutiveNotRunningRef.current = 0;
+        setPipelineSessionActive(true);
+      } else {
+        consecutiveNotRunningRef.current += 1;
+        if (consecutiveNotRunningRef.current >= 2) {
+          setPipelineSessionActive(false);
+        }
+      }
     }
   }, [projectId]);
 
@@ -661,6 +693,8 @@ export default function ProjectPage() {
     });
     if (res.ok) {
       setRunning(true);
+      setPipelineSessionActive(true);
+      consecutiveNotRunningRef.current = 0;
       // Don't call fetchProject() immediately — the 2s polling starts
       // now that running=true. Calling it here races with the pipeline
       // setting status to "running" in the DB and can revert running=false.
@@ -766,6 +800,8 @@ export default function ProjectPage() {
     });
     if (res.ok) {
       setRunning(true);
+      setPipelineSessionActive(true);
+      consecutiveNotRunningRef.current = 0;
       // Same as handleRun — don't race fetchProject against pipeline startup
     } else {
       const data = await res.json();
@@ -774,7 +810,7 @@ export default function ProjectPage() {
   };
 
   const handleSubmitFeedback = async () => {
-    if (!feedbackText.trim() || running) return;
+    if (!feedbackText.trim() || running || pipelineSessionActive) return;
     setError(null);
     const res = await fetch(`/api/projects/${projectId}/run`, {
       method: "POST",
@@ -786,8 +822,10 @@ export default function ProjectPage() {
     });
     if (res.ok) {
       setRunning(true);
+      setPipelineSessionActive(true);
+      consecutiveNotRunningRef.current = 0;
       setFeedbackText("");
-      setShowFeedbackInput(false);
+      // Keep feedback panel open so the running spinner is visible
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start feedback pass");
@@ -842,8 +880,20 @@ export default function ProjectPage() {
     ["pending", "ready"].includes(t.status),
   );
 
+  const effectiveRunning = running || pipelineSessionActive;
+
+  const completedStages: string[] = project
+    ? JSON.parse(project.completedStages || "[]")
+    : [];
+
+  // Determine which stage is currently running from the most recent STAGE log
+  const activeStage: string | null = effectiveRunning
+    ? ([...logEntries].reverse().find((e) => e.agent === "STAGE")?.message ??
+      null)
+    : null;
+
   const currentStatus = project
-    ? deriveCurrentStatus(taskList, project.status, running)
+    ? deriveCurrentStatus(taskList, project.status, effectiveRunning, activeStage)
     : {
         label: "Loading…",
         phase: "idle",
@@ -851,17 +901,7 @@ export default function ProjectPage() {
         progressPct: 0,
       };
 
-  const completedStages: string[] = project
-    ? JSON.parse(project.completedStages || "[]")
-    : [];
-
-  // Determine which stage is currently running from the most recent STAGE log
-  const activeStage: string | null = running
-    ? ([...logEntries].reverse().find((e) => e.agent === "STAGE")?.message ??
-      null)
-    : null;
-
-  const stageStates = deriveStageStates(taskList, completedStages, running, activeStage);
+  const stageStates = deriveStageStates(taskList, completedStages, effectiveRunning, activeStage);
 
   const statusColorClass: Record<string, string> = {
     muted: styles.statusBarMuted,
@@ -881,7 +921,7 @@ export default function ProjectPage() {
     (s) => s.key !== "feedback" && stageStates[s.key] === "pending",
   );
   const canRunAll =
-    !running &&
+    !effectiveRunning &&
     project?.status !== "done" &&
     !hasAwaitingApproval &&
     hasRemainingStages;
@@ -1191,7 +1231,7 @@ export default function ProjectPage() {
               </a>
             </>
           )}
-          {running ? (
+          {effectiveRunning ? (
             <button className={styles.stopBtn} onClick={handleStop}>
               <span className={styles.stopIcon} />
               Stop
@@ -1219,8 +1259,8 @@ export default function ProjectPage() {
           // Can run this stage if upstream is done and not currently running
           const upstreamDone =
             isFirst || stageStates[PIPELINE_STAGES[i - 1].key] === "done";
-          const canRun = !running && state === "pending" && upstreamDone;
-          const canRetry = !running && state === "done";
+          const canRun = !effectiveRunning && state === "pending" && upstreamDone;
+          const canRetry = !effectiveRunning && state === "done";
           const isApproval = state === "approval";
 
           return (
@@ -1324,7 +1364,7 @@ export default function ProjectPage() {
               </button>
             )}
           </div>
-          {running && activeStage === "feedback" ? (
+          {effectiveRunning && activeStage === "feedback" ? (
             <div className={styles.feedbackRunning}>
               <span className={styles.stageSpinner} />
               Running feedback pass...
