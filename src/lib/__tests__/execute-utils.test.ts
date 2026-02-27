@@ -133,9 +133,14 @@ describe("getUncoveredTasks", () => {
     expect(uncovered.length).toBe(3);
     expect(uncovered.map((t) => t.id)).toEqual([2, 3, 4]);
   });
-});
 
-// ─── Coverage completeness ────────────────────────────────────────────────────
+  it("totalSteps=0 returns all tasks (everything is uncovered)", () => {
+    const group = makeTasks(3);
+    const uncovered = getUncoveredTasks(0, group);
+    expect(uncovered.length).toBe(3);
+    expect(uncovered.map((t) => t.id)).toEqual([1, 2, 3]);
+  });
+});
 
 describe("full-coverage invariant", () => {
   it("getTasksForStep + getUncoveredTasks covers each task exactly once", () => {

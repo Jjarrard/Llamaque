@@ -168,9 +168,54 @@ describe("deriveCurrentStatus", () => {
     expect(result.label).toContain("Build the thing");
   });
 
-  it("returns qa phase when tasks are in qa_check", () => {
-    const result = deriveCurrentStatus([task("qa_check")], "running", true);
-    expect(result.phase).toBe("qa");
+  it("returns edit phase when tasks are editing while running", () => {
+    const result = deriveCurrentStatus([task("editing")], "running", true);
+    expect(result.phase).toBe("edit");
+    expect(result.label).toContain("Editing");
+    expect(result.color).toBe("accent");
+  });
+
+  it("returns generic running phase when activeStage is unrecognised", () => {
+    const result = deriveCurrentStatus(
+      [task("ready")],
+      "running",
+      true,
+      "unknown_future_stage",
+    );
+    expect(result.phase).toBe("running");
+    expect(result.label).toContain("Running");
+  });
+
+  it("returns paused when projectStatus is a stale 'running' but running=false", () => {
+    // DB can hold 'running' if the process crashed — UI shows paused until user acts
+    const result = deriveCurrentStatus(
+      [task("ready"), task("done")],
+      "running",
+      false,
+    );
+    expect(result.phase).toBe("paused");
+    expect(result.label).toContain("Paused");
+  });
+
+  it("truncates executing task description to 50 chars in label", () => {
+    const longDescription = "A".repeat(80);
+    const result = deriveCurrentStatus(
+      [task("executing", longDescription)],
+      "running",
+      true,
+    );
+    expect(result.label.length).toBeLessThan(longDescription.length + 20);
+    expect(result.label).toContain("A".repeat(50));
+    expect(result.label).not.toContain("A".repeat(51));
+  });
+
+  it("returns progressPct 0 when all tasks are pending (none done)", () => {
+    const result = deriveCurrentStatus(
+      [task("ready"), task("ready"), task("ready")],
+      "running",
+      true,
+    );
+    expect(result.progressPct).toBe(0);
   });
 
   it("calculates progress percentage correctly", () => {
@@ -290,4 +335,29 @@ describe("deriveStageStates", () => {
     );
     expect(states.breakdown).toBe("done");
   });
-});
+
+  it("all stages done when all 7 are in completedStages", () => {
+    const allStages = [
+      "architect",
+      "decompose",
+      "breakdown",
+      "tdd",
+      "execute",
+      "qa",
+      "feedback",
+    ];
+    const states = deriveStageStates(NO_TASKS, allStages, false, null);
+    for (const s of allStages) {
+      expect(states[s as import("@/lib/status").StageKey]).toBe("done");
+    }
+  });
+
+  it("fallback active-stage picker reaches feedback when all prior stages are done", () => {
+    const states = deriveStageStates(
+      NO_TASKS,
+      ["architect", "decompose", "breakdown", "tdd", "execute", "qa"],
+      true,
+      null, // no explicit hint — fallback picker must find 'feedback'
+    );
+    expect(states.feedback).toBe("active");
+  });});
