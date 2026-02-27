@@ -578,7 +578,18 @@ export default function Component() {
       if (stage === "all" || stage === "tdd") {
         await this.emitStageStart("tdd");
         await this.log("TDD", "Generating test files...");
-        await this.runTDDPhase(fileSpecs);
+        try {
+          await this.runTDDPhase(fileSpecs);
+        } catch (err) {
+          // TDD is optional — if the whole phase crashes (e.g. Ollama timeout),
+          // log and continue to Execute rather than pausing the pipeline.
+          await this.log(
+            "TDD",
+            `Test generation phase failed: ${
+              err instanceof Error ? err.message : String(err)
+            } — continuing to Execute`,
+          );
+        }
         await this.markStageComplete("tdd");
 
         if (stage === "tdd") {
@@ -967,8 +978,19 @@ export default function Component() {
       const spec = fileSpecs[filePath];
       if (!spec || spec.requirements.length === 0) continue;
       if (supportsTDD(filePath)) {
-        await this.generateTests(spec.requirements, filePath);
-        testsGenerated++;
+        try {
+          await this.generateTests(spec.requirements, filePath);
+          testsGenerated++;
+        } catch (err) {
+          // A single file failing to generate tests must not crash the pipeline.
+          // Log it and move on — the Execute phase will still write code.
+          await this.log(
+            "TDD",
+            `Test generation failed for ${filePath}: ${
+              err instanceof Error ? err.message : String(err)
+            } — skipping`,
+          );
+        }
       }
     }
     if (testsGenerated === 0) {
@@ -1973,6 +1995,8 @@ export default function Component() {
 
     const outDir = this.outputDir();
     const testPath = path.join(outDir, testFile);
+    // Ensure the target directory exists (handles nested manifest paths)
+    fs.mkdirSync(path.dirname(testPath), { recursive: true });
     fs.writeFileSync(testPath, repaired, "utf-8");
 
     await this.log(
