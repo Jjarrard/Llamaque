@@ -9,6 +9,8 @@
     "lint": "eslint",
     "test": "vitest run",
     "test:watch": "vitest",
+    "test:unit": "vitest run --config vitest.unit.config.mts",
+    "test:unit:watch": "vitest --config vitest.unit.config.mts",
     "db:generate": "drizzle-kit generate"
   },
   "dependencies": {
