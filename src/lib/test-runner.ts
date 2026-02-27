@@ -36,10 +36,17 @@ export interface TestRunResult {
 /**
  * Run vitest against a specific project's test file.
  * Returns structured results with per-test pass/fail info.
+ *
+ * @param projectId   - project whose output/ directory to use
+ * @param testFileName - filename of the test file (e.g. "main.test.tsx");
+ *                       defaults to "Component.test.tsx" for backward compat
  */
-export function runTests(projectId: number): TestRunResult {
+export function runTests(
+  projectId: number,
+  testFileName: string = "Component.test.tsx",
+): TestRunResult {
   const outputDir = path.join(process.cwd(), "output", String(projectId));
-  const testFile = path.join(outputDir, "Component.test.tsx");
+  const testFile = path.join(outputDir, testFileName);
 
   if (!fs.existsSync(testFile)) {
     return {
@@ -47,13 +54,14 @@ export function runTests(projectId: number): TestRunResult {
       failed: 0,
       total: 0,
       tests: [],
-      rawOutput: "No test file found",
+      rawOutput: `No test file found (${testFileName})`,
       crashed: false,
     };
   }
 
-  // Also need the component file for the import
-  const componentFile = path.join(outputDir, "Component.tsx");
+  // Derive companion code file by stripping ".test." from the name
+  const codeFileName = testFileName.replace(/\.test\.([^.]+)$/, ".$1");
+  const componentFile = path.join(outputDir, codeFileName);
   if (!fs.existsSync(componentFile)) {
     return {
       passed: 0,

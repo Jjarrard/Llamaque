@@ -2036,7 +2036,7 @@ export default function Component() {
     // Fix import in test file to match the component's actual export name
     await this.fixTestImport();
 
-    let testResult = runTests(this.projectId);
+    let testResult = runTests(this.projectId, testFileName);
 
     // If vitest crashed (bad test syntax, missing import), try to repair the test file
     if (testResult.crashed) {
@@ -2047,7 +2047,7 @@ export default function Component() {
 
       const repaired = await this.repairTestFile(testResult);
       if (repaired) {
-        testResult = runTests(this.projectId);
+        testResult = runTests(this.projectId, testFileName);
       }
 
       if (testResult.crashed) {
@@ -2134,7 +2134,7 @@ export default function Component() {
           currentTest,
         );
         if (testFixed) {
-          testResult = runTests(this.projectId);
+          testResult = runTests(this.projectId, testFileName);
           continue;
         }
         break;
@@ -2162,7 +2162,7 @@ export default function Component() {
 
       // Write the fixed code and re-run tests
       await this.writeOutputFile(primaryFile, repaired);
-      const newResult = runTests(this.projectId);
+      const newResult = runTests(this.projectId, testFileName);
 
       if (newResult.crashed) {
         await this.log(
@@ -2208,7 +2208,7 @@ export default function Component() {
             fs.readFileSync(testPath, "utf-8"),
           );
           if (testFixed) {
-            testResult = runTests(this.projectId);
+            testResult = runTests(this.projectId, testFileName);
             continue;
           }
         }
@@ -2395,7 +2395,7 @@ output: |
       fs.writeFileSync(testPath, repaired, "utf-8");
 
       // Try running tests again
-      const retryResult = runTests(this.projectId);
+      const retryResult = runTests(this.projectId, testFileName);
       if (!retryResult.crashed) {
         await this.log("TDD", "Test file repaired successfully");
         return true;
@@ -2481,7 +2481,7 @@ output: |
     const { repaired } = autoRepairOutput(block.output, testFileName);
     fs.writeFileSync(testPath, repaired, "utf-8");
 
-    const retryResult = runTests(this.projectId);
+    const retryResult = runTests(this.projectId, testFileName);
     if (retryResult.crashed) {
       // Repair made things worse — restore original
       fs.writeFileSync(testPath, testCode, "utf-8");
