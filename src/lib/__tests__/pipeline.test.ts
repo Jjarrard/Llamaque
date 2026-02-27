@@ -142,7 +142,7 @@ function captureProjectStatusUpdates() {
     if (typeof vals.status === "string") captured.push(vals.status);
     return { where: vi.fn().mockResolvedValue(undefined) };
   };
-  vi.mocked(db.update).mockReturnValue({ set: makeChain } as ReturnType<
+  vi.mocked(db.update).mockReturnValue({ set: makeChain } as unknown as ReturnType<
     typeof db.update
   >);
   return captured;
@@ -160,7 +160,7 @@ function setupDbDefaults(
   );
   vi.mocked(db.insert).mockReturnValue({
     values: vi.fn().mockResolvedValue(undefined),
-  } as ReturnType<typeof db.insert>);
+  } as unknown as ReturnType<typeof db.insert>);
 }
 
 function makeNoopOnEvent() {
@@ -232,7 +232,7 @@ describe("Pipeline status transitions", () => {
           if (vals.fileManifest) manifestUpdates.push(vals.fileManifest);
           return { where: vi.fn().mockResolvedValue(undefined) };
         },
-      } as ReturnType<typeof db.update>);
+      } as unknown as ReturnType<typeof db.update>);
 
       const pipeline = new Pipeline(1, "qwen2.5:7b", makeNoopOnEvent());
       await pipeline.run("architect");
@@ -306,7 +306,7 @@ describe("Pipeline status transitions", () => {
           insertedTasks.push(vals);
           return Promise.resolve(undefined);
         }),
-      } as ReturnType<typeof db.insert>);
+      } as unknown as ReturnType<typeof db.insert>);
 
       const pipeline = new Pipeline(1, "qwen2.5:7b", makeNoopOnEvent());
       await pipeline.run("decompose");
