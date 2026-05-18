@@ -51,6 +51,9 @@ import {
   runReframeTactic,
 } from "@/lib/agents/cleaner";
 import { runIterativeQA } from "@/lib/agents/iterative-qa";
+import { runProgressReviewer } from "@/lib/agents/progress-reviewer";
+import { runVisualQA } from "@/lib/agents/visual-qa";
+import { modelCapabilities } from "@/lib/model-capabilities";
 import {
   runEditor,
   runFeedbackEditor,
@@ -1525,78 +1528,149 @@ export default function Component() {
       // Capable models like Gemma 4 will helpfully restructure the whole
       // file each step if asked for a full rewrite. To prevent drift, try a
       // surgical SEARCH/REPLACE patch first — emit only the diff.
-      // Falls through to the full-rewrite self-healing loop on any failure.
+      // The model emits ONE block per turn; we loop up to MAX_PATCH_TURNS
+      // turns, asking "anything else?" between applications. Each turn may
+      // retry once if the SEARCH text isn't found in the (possibly updated)
+      // file. Falls through to the full-rewrite self-healing loop on any
+      // unrecoverable failure.
       const patchableExts = ["tsx", "jsx", "ts", "js"];
       const fileExt = filePath.split(".").pop()?.toLowerCase() || "";
       const canPatch = hasContent && i > 0 && patchableExts.includes(fileExt);
+      const MAX_PATCH_TURNS = 4;
 
       let stepPassed = false;
 
       if (canPatch && !this.aborted) {
-        const numbered = currentContent
-          .split("\n")
-          .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
-          .join("\n");
+        let workingContent = currentContent;
+        let totalBlocks = 0;
+        let totalTokens = 0;
+        let totalMs = 0;
+        let combinedRaw = "";
+        let combinedPrompt = "";
+        let lastPatchError: string | null = null;
+        let modelSaidDone = false;
+        let patchAborted = false;
 
-        const patchRes = await runDeveloperPatch(
-          this.model,
-          filePath,
-          numbered,
-          req,
-          this.projectName,
-          this.projectDescription,
-        );
-        const blocks = parsePatch(patchRes.raw);
-        if (blocks.length > 0) {
-          const applied = applyPatch(currentContent, blocks);
-          if (applied.ok) {
-            // Validate the patched content with the same checks used below
-            const { repaired: patchRepaired, fixes: patchFixes } =
-              autoRepairOutput(applied.content, filePath);
-            const candidate =
-              patchFixes.length > 0 ? patchRepaired : applied.content;
-            const patchValidation = validateOutput(candidate, filePath, {
-              allowScaffold: true,
-            });
-            const patchSyntax =
-              patchValidation.valid && patchableExts.includes(fileExt)
-                ? checkTypeScriptSyntax(filePath, candidate)
-                : [];
+        for (let turn = 1; turn <= MAX_PATCH_TURNS; turn++) {
+          if (this.aborted) break;
 
-            if (patchValidation.valid && patchSyntax.length === 0) {
-              await this.writeOutputFile(filePath, candidate);
-              stepsCompleted++;
-              await this.log(
-                "DEV",
-                `Step ${i + 1} PATCH (${applied.blocksApplied} block${applied.blocksApplied === 1 ? "" : "s"}, ${patchRes.tokens} tokens, ${patchRes.durationMs}ms)`,
-                tasksForThisStep[0]?.id || taskGroup[0].id,
-                patchRes.prompt,
-                patchRes.raw,
-              );
-              stepPassed = true;
-            } else {
-              const reason = !patchValidation.valid
-                ? patchValidation.reason
-                : `TS syntax: ${patchSyntax.join("; ")}`;
-              await this.log(
-                "QA",
-                `Step ${i + 1} patch invalid (${reason}) — falling back to full rewrite`,
-                tasksForThisStep[0]?.id || taskGroup[0].id,
-              );
-            }
-          } else {
+          const numbered = workingContent
+            .split("\n")
+            .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
+            .join("\n");
+
+          // Build the per-turn instruction. After the first turn, ask the
+          // model whether anything else is still needed for the feature.
+          const turnInstruction =
+            turn === 1
+              ? req
+              : `${req}\n\n(Continuing the same feature — turn ${turn}. If everything required by this feature is already in the file, reply with the single word DONE. Otherwise, emit the next SEARCH/REPLACE block.)`;
+
+          const note = lastPatchError ?? undefined;
+          const patchRes = await runDeveloperPatch(
+            this.model,
+            filePath,
+            numbered,
+            turnInstruction,
+            this.projectName,
+            this.projectDescription,
+            note,
+          );
+          lastPatchError = null;
+          totalTokens += patchRes.tokens;
+          totalMs += patchRes.durationMs;
+          combinedRaw += (combinedRaw ? "\n\n---\n\n" : "") + patchRes.raw;
+          combinedPrompt = combinedPrompt || patchRes.prompt;
+
+          // DONE sentinel — model says nothing more is needed
+          if (/^\s*DONE\s*$/m.test(patchRes.raw.trim().split("\n")[0] || "")) {
+            modelSaidDone = true;
+            break;
+          }
+
+          const blocks = parsePatch(patchRes.raw);
+          if (blocks.length === 0) {
+            // No block AND no DONE: treat as model giving up — fall back
             await this.log(
               "QA",
-              `Step ${i + 1} patch failed to apply: ${applied.reason} — falling back to full rewrite`,
+              `Step ${i + 1} patch turn ${turn}: no SEARCH/REPLACE block parsed — falling back to full rewrite`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            patchAborted = true;
+            break;
+          }
+
+          // Apply only the first block — we asked for one per turn
+          const applied = applyPatch(workingContent, [blocks[0]]);
+          if (!applied.ok) {
+            // SEARCH didn't match. Give the model one retry with the same
+            // (unchanged) file content and an explicit error note. If it
+            // fails again next turn we'll fall back.
+            if (!lastPatchError) {
+              lastPatchError = `Your previous SEARCH did not match the file (${applied.reason}). The file is unchanged. Re-read the CURRENT file shown below and emit a corrected SEARCH/REPLACE block with the exact existing text.`;
+              continue;
+            }
+            await this.log(
+              "QA",
+              `Step ${i + 1} patch turn ${turn} failed twice: ${applied.reason} — falling back to full rewrite`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            patchAborted = true;
+            break;
+          }
+
+          workingContent = applied.content;
+          totalBlocks += applied.blocksApplied;
+        }
+
+        if (!patchAborted && totalBlocks > 0) {
+          // Validate accumulated patched content
+          const { repaired: patchRepaired, fixes: patchFixes } =
+            autoRepairOutput(workingContent, filePath);
+          const candidate =
+            patchFixes.length > 0 ? patchRepaired : workingContent;
+          const patchValidation = validateOutput(candidate, filePath, {
+            allowScaffold: true,
+          });
+          const patchSyntax =
+            patchValidation.valid && patchableExts.includes(fileExt)
+              ? checkTypeScriptSyntax(filePath, candidate)
+              : [];
+
+          if (patchValidation.valid && patchSyntax.length === 0) {
+            await this.writeOutputFile(filePath, candidate);
+            stepsCompleted++;
+            const turnNote = modelSaidDone ? " (DONE)" : "";
+            await this.log(
+              "DEV",
+              `Step ${i + 1} PATCH (${totalBlocks} block${totalBlocks === 1 ? "" : "s"}${turnNote}, ${totalTokens} tokens, ${totalMs}ms)`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+              combinedPrompt,
+              combinedRaw,
+            );
+            stepPassed = true;
+          } else {
+            const reason = !patchValidation.valid
+              ? patchValidation.reason
+              : `TS syntax: ${patchSyntax.join("; ")}`;
+            await this.log(
+              "QA",
+              `Step ${i + 1} patch invalid after ${totalBlocks} block(s) (${reason}) — falling back to full rewrite`,
               tasksForThisStep[0]?.id || taskGroup[0].id,
             );
           }
-        } else {
+        } else if (!patchAborted && modelSaidDone && totalBlocks === 0) {
+          // Model said DONE on turn 1 — feature already implemented.
+          // Skip this step entirely; the file is fine as-is.
+          stepsCompleted++;
           await this.log(
-            "QA",
-            `Step ${i + 1} patch: no SEARCH/REPLACE blocks parsed — falling back to full rewrite`,
+            "DEV",
+            `Step ${i + 1} PATCH skipped (model reports feature already present, ${totalTokens} tokens, ${totalMs}ms)`,
             tasksForThisStep[0]?.id || taskGroup[0].id,
+            combinedPrompt,
+            combinedRaw,
           );
+          stepPassed = true;
         }
       }
 
@@ -1605,7 +1679,7 @@ export default function Component() {
         // UI advances. We still fall through to the per-step task-marking
         // block below (which sets DB output / completeTask for every task).
         if (displayTask) {
-          await this.setStatus(displayTask.id, "completed");
+          await this.setStatus(displayTask.id, "done");
           this.emit("task_completed", {
             taskId: displayTask.id,
             agent: "developer",
@@ -2466,6 +2540,19 @@ export default function Component() {
       await this.runImprovementPass();
     }
 
+    // Progress review (PM honing): cheap final pass that compares the spec
+    // to the built files and patches in genuinely missing spec features.
+    // Runs whether or not tests passed — spec drift is orthogonal to bug
+    // count, e.g. a project may build cleanly but be missing the "delete"
+    // button the spec asked for.
+    await this.runProgressReviewPass();
+
+    // Visual QA — render the UI in headless Chromium and ask a vision
+    // model whether it matches the spec. Only runs for vision-capable
+    // models (gemma3+, llava, etc). Reports issues via REV log entries;
+    // does NOT auto-fix (vision verdicts are noisy — surface to user).
+    await this.runVisualQAPass();
+
     await this.runConsistencyCheck();
   }
 
@@ -3129,15 +3216,30 @@ output: |
 
     // Code-specific checks
     if (["tsx", "jsx", "ts", "js", "py", "css"].includes(ext)) {
-      // Check for unbalanced braces (truncation indicator)
-      if (["tsx", "jsx", "ts", "js", "css"].includes(ext)) {
+      // Brace balance / truncation indicator.
+      // For JS/TS/JSX/TSX, defer to the TypeScript parser — counting `{`/`}`
+      // by hand produces false positives for regex literals (`/\}/`) and
+      // JSX expressions. The parser already reports unterminated blocks.
+      // For CSS we still use a naive counter (no parser available).
+      if (["tsx", "jsx", "ts", "js"].includes(ext)) {
+        const errs = checkTypeScriptSyntax(filePath, content);
+        const trunc = errs.find(
+          (msg) =>
+            /\}.*expected|expected.*\}|Unexpected end of/i.test(msg) ||
+            /unterminated|unexpected token/i.test(msg),
+        );
+        if (trunc) {
+          issues.push({
+            file: filePath,
+            issue: `Syntax error suggests truncation: ${trunc}`,
+          });
+        }
+      } else if (ext === "css") {
+        let braceCount = 0;
         const stripped = content
-          .replace(/\/\/.*$/gm, "")
           .replace(/\/\*[\s\S]*?\*\//g, "")
           .replace(/"(?:[^"\\]|\\.)*"/g, '""')
-          .replace(/'(?:[^'\\]|\\.)*'/g, "''")
-          .replace(/`(?:[^`\\]|\\.)*`/g, "``");
-        let braceCount = 0;
+          .replace(/'(?:[^'\\]|\\.)*'/g, "''");
         for (const ch of stripped) {
           if (ch === "{") braceCount++;
           if (ch === "}") braceCount--;
@@ -3421,6 +3523,13 @@ output: |
     // If the same issue recurs in the same file after a fix attempt, skip it
     // rather than looping forever on the same broken code.
     const issueAttemptCount = new Map<string, number>();
+    // Track validation failures per file. The model frequently RE-PHRASES
+    // the same underlying issue, which defeats the problem-prefix dedup
+    // above. After 2 validation failures on the same file we skip any
+    // further attempts on that file in this pass — the model clearly
+    // can't make progress and further rewrites risk breaking working code.
+    const fileFailCount = new Map<string, number>();
+    const MAX_FILE_VALIDATION_FAILS = 2;
     let round = 0;
 
     while (round < Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
@@ -3493,6 +3602,19 @@ output: |
         continue;
       }
 
+      // Skip if this file has already burned too many failed-validation attempts.
+      const fileFails = fileFailCount.get(resolvedFile) ?? 0;
+      if (fileFails >= MAX_FILE_VALIDATION_FAILS) {
+        await this.log(
+          "QA",
+          `Round ${round}: ${resolvedFile} has ${fileFails} prior validation failures — abandoning further fixes on this file`,
+        );
+        previousFixes.push(
+          `${problem} (skipped — file abandoned after ${fileFails} failed fixes)`,
+        );
+        continue;
+      }
+
       // Build fix prompt for the Developer
       const existingContent = readFile(resolvedFile);
       if (!existingContent || existingContent.trim().length < 20) {
@@ -3553,6 +3675,10 @@ output: |
           const reason = !editValidation.valid
             ? editValidation.reason!
             : `${editSyntaxErrors[0]}`;
+          fileFailCount.set(
+            resolvedFile,
+            (fileFailCount.get(resolvedFile) ?? 0) + 1,
+          );
           await this.log(
             "QA",
             `Round ${round}: Surgical edit validation failed (${reason}) — falling back to full rewrite`,
@@ -3599,6 +3725,10 @@ output: |
           const reason = !validation.valid
             ? validation.reason!
             : `TS syntax: ${rewriteSyntaxErrors[0]}`;
+          fileFailCount.set(
+            resolvedFile,
+            (fileFailCount.get(resolvedFile) ?? 0) + 1,
+          );
           await this.log(
             "QA",
             `Round ${round}: Fix for ${resolvedFile} failed validation: ${reason} — keeping original`,
@@ -3631,6 +3761,244 @@ output: |
       "QA",
       `Iterative QA complete: ${previousFixes.length} issue(s) addressed in ${round} round(s)`,
     );
+  }
+
+  // ─────────────────────────────────────────────
+  //  PHASE 7: PROGRESS REVIEW (PM "honing")
+  // ─────────────────────────────────────────────
+
+  /** Max distinct missing-feature patches applied per honing pass */
+  private static readonly MAX_HONING_FIXES = 3;
+
+  /**
+   * After QA finishes, ask the model "as PM" whether the built project
+   * actually matches the spec. For each item flagged "missing", apply
+   * a targeted patch on the indicated file.
+   *
+   * Capped at MAX_HONING_FIXES total feature applications to keep runtime
+   * bounded — if more features are missing the user can run "feedback".
+   */
+  private async runProgressReviewPass() {
+    if (this.aborted) return;
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) return;
+
+    // Snapshot files for the reviewer
+    const snapshot: { path: string; content: string }[] = [];
+    for (const file of this.manifest) {
+      const full = path.join(outDir, file.path);
+      if (!fs.existsSync(full)) continue;
+      const content = fs.readFileSync(full, "utf-8");
+      if (content.trim().length > 20)
+        snapshot.push({ path: file.path, content });
+    }
+    if (snapshot.length === 0) return;
+
+    await this.log(
+      "REV",
+      "Progress review: checking built files against spec...",
+    );
+
+    let review;
+    try {
+      review = await runProgressReviewer(
+        this.model,
+        this.projectName,
+        this.projectDescription,
+        snapshot,
+      );
+    } catch (err) {
+      await this.log(
+        "REV",
+        `Progress review failed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    await this.log(
+      "REV",
+      `Progress: ${review.done.length} done, ${review.missing.length} missing. Next: ${review.nextAction || "(none)"}`,
+      undefined,
+      review.prompt,
+      review.raw,
+    );
+
+    if (review.missing.length === 0) return;
+
+    const patchableExts = ["tsx", "jsx", "ts", "js"];
+    const fixes = review.missing.slice(0, Pipeline.MAX_HONING_FIXES);
+
+    for (const { feature, file } of fixes) {
+      if (this.aborted) return;
+
+      // Resolve the file to a real manifest file
+      const resolved = this.resolveTargetFile(file);
+      if (!resolved) {
+        await this.log(
+          "REV",
+          `Honing: unknown file "${file}" — skipping "${feature}"`,
+        );
+        continue;
+      }
+      const ext = resolved.split(".").pop()?.toLowerCase() || "";
+      if (!patchableExts.includes(ext)) {
+        await this.log(
+          "REV",
+          `Honing: ${resolved} is not patchable (${ext}) — skipping`,
+        );
+        continue;
+      }
+
+      const fullPath = path.join(outDir, resolved);
+      if (!fs.existsSync(fullPath)) continue;
+      const current = fs.readFileSync(fullPath, "utf-8");
+
+      const numbered = current
+        .split("\n")
+        .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
+        .join("\n");
+
+      const featureInstruction = `MISSING SPEC FEATURE: ${feature}. Add the minimum code to satisfy this requirement. Wire it into the UI if applicable.`;
+
+      const patchRes = await runDeveloperPatch(
+        this.model,
+        resolved,
+        numbered,
+        featureInstruction,
+        this.projectName,
+        this.projectDescription,
+      );
+
+      const blocks = parsePatch(patchRes.raw);
+      if (blocks.length === 0) {
+        await this.log(
+          "REV",
+          `Honing: no patch block produced for "${feature}"`,
+        );
+        continue;
+      }
+
+      // Apply only the first block (single-block-per-turn convention)
+      const applied = applyPatch(current, [blocks[0]]);
+      if (!applied.ok) {
+        await this.log(
+          "REV",
+          `Honing: patch failed for "${feature}": ${applied.reason}`,
+        );
+        continue;
+      }
+
+      const { repaired } = autoRepairOutput(applied.content, resolved);
+      const candidate = repaired || applied.content;
+      const validation = validateOutput(candidate, resolved, {
+        allowScaffold: true,
+      });
+      const syntax = validation.valid
+        ? checkTypeScriptSyntax(resolved, candidate)
+        : [];
+
+      if (!validation.valid || syntax.length > 0) {
+        const reason = !validation.valid
+          ? validation.reason
+          : `TS syntax: ${syntax.join("; ")}`;
+        await this.log(
+          "REV",
+          `Honing: patch for "${feature}" invalid (${reason}) — keeping original`,
+        );
+        continue;
+      }
+
+      await this.writeOutputFile(resolved, candidate);
+      await this.log(
+        "REV",
+        `Honing: applied "${feature}" to ${resolved} (${applied.blocksApplied} block, ${patchRes.tokens} tokens)`,
+        undefined,
+        patchRes.prompt,
+        patchRes.raw,
+      );
+    }
+  }
+
+  // ─────────────────────────────────────────────
+  //  PHASE 8: VISUAL QA (vision-capable models only)
+  // ─────────────────────────────────────────────
+
+  /**
+   * Render the main TSX file in headless Chromium, screenshot it, and ask a
+   * vision-capable LLM (gemma3+, llava, etc) whether the UI matches the spec.
+   *
+   * Visual issues are logged as REV entries — they are NOT auto-fixed because
+   * vision models still hallucinate UI elements they expect to see. The user
+   * can apply visual feedback via the feedback pass.
+   */
+  private async runVisualQAPass() {
+    if (this.aborted) return;
+
+    const caps = modelCapabilities(this.model);
+    if (!caps.vision) return; // Silent skip for text-only models
+
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) return;
+
+    // Pick the main TSX/JSX file — typically the manifest entry whose
+    // basename is App.tsx, or otherwise the last manifest file (root).
+    const tsxFiles = this.manifest.filter((f) => /\.(tsx|jsx)$/i.test(f.path));
+    if (tsxFiles.length === 0) return;
+    const mainFile =
+      tsxFiles.find((f) => /^app\.(tsx|jsx)$/i.test(f.path))?.path ??
+      tsxFiles[tsxFiles.length - 1].path;
+
+    await this.log(
+      "REV",
+      `Visual QA: rendering ${mainFile} in headless Chromium...`,
+    );
+
+    let result;
+    try {
+      result = await runVisualQA(
+        this.model,
+        this.projectName,
+        this.projectDescription,
+        mainFile,
+        outDir,
+      );
+    } catch (err) {
+      await this.log(
+        "REV",
+        `Visual QA crashed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    if (result.skippedReason) {
+      await this.log("REV", `Visual QA skipped: ${result.skippedReason}`);
+      return;
+    }
+
+    const shotKb = result.screenshotBytes
+      ? Math.round(result.screenshotBytes / 1024)
+      : 0;
+    if (result.issues.length === 0) {
+      await this.log(
+        "REV",
+        `Visual QA: UI matches spec (${shotKb}KB screenshot, ${result.tokens ?? 0} tokens)`,
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+      return;
+    }
+
+    await this.log(
+      "REV",
+      `Visual QA found ${result.issues.length} issue(s) in ${mainFile}:`,
+      undefined,
+      result.prompt,
+      result.raw,
+    );
+    for (const { problem } of result.issues) {
+      await this.log("REV", `  • ${problem}`);
+    }
   }
 
   // ─────────────────────────────────────────────

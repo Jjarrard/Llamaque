@@ -316,7 +316,9 @@ const PATCH_SYSTEM_PROMPT = `You are a surgical code editor. You will be given t
 
 Your job: produce the MINIMUM diff to add that feature. Do NOT rewrite the file. Do NOT restructure. Do NOT rename anything that already exists.
 
-Output ONE OR MORE SEARCH/REPLACE blocks. Format EXACTLY:
+Output EXACTLY ONE SEARCH/REPLACE block per reply. You will be re-prompted to add more blocks if the feature still needs work. Smaller, focused diffs are easier to verify.
+
+Format the block EXACTLY:
 
 <<<<<<< SEARCH
 (exact existing lines from the file, verbatim, INCLUDING indentation, with NO line numbers)
@@ -324,32 +326,26 @@ Output ONE OR MORE SEARCH/REPLACE blocks. Format EXACTLY:
 (replacement lines — same indentation style)
 >>>>>>> REPLACE
 
+If the feature is ALREADY fully implemented in the current file, reply with just the single word:
+DONE
+
 Rules:
 - The SEARCH section must be COPIED EXACTLY from the current file. Same whitespace, same indentation, same quotes.
 - Do NOT include the line number prefix (e.g. "  42 | ") in SEARCH or REPLACE — those are only for your reference.
 - SEARCH must be UNIQUE in the file. Include 1-2 lines of surrounding context if a fragment is not unique on its own.
-- Keep each SEARCH small (3-10 lines). Use multiple blocks instead of one giant block.
+- Keep SEARCH small (3-10 lines).
 - For a brand-new function or import that doesn't replace anything, use an EMPTY SEARCH (just two newlines between the markers) and put the new code in REPLACE — it will be appended.
 - Do NOT include unchanged code that you aren't modifying.
 - Do NOT abbreviate. NEVER write "// ... rest unchanged" or "/* existing code */".
-- Output ONLY the SEARCH/REPLACE blocks. No prose, no explanations, no fenced wrappers.
+- Output ONLY the single SEARCH/REPLACE block (or the word DONE). No prose, no explanations, no fenced wrappers.
 
-Example — adding a pause button to a timer component:
+Example — adding a pause toggle to a timer component (one block per turn):
 
 <<<<<<< SEARCH
   const [seconds, setSeconds] = useState(0);
 =======
   const [seconds, setSeconds] = useState(0);
   const [isPaused, setIsPaused] = useState(false);
->>>>>>> REPLACE
-
-<<<<<<< SEARCH
-      <button onClick={handleStart}>Start</button>
-    </div>
-=======
-      <button onClick={handleStart}>Start</button>
-      <button onClick={() => setIsPaused(p => !p)}>{isPaused ? "Resume" : "Pause"}</button>
-    </div>
 >>>>>>> REPLACE`;
 
 export async function runDeveloperPatch(
@@ -359,21 +355,25 @@ export async function runDeveloperPatch(
   featureInstruction: string,
   projectName: string,
   projectDescription: string,
+  extraNote?: string,
 ): Promise<{
   raw: string;
   prompt: string;
   tokens: number;
   durationMs: number;
 }> {
+  const noteBlock = extraNote
+    ? `\n\nNOTE FROM PREVIOUS TURN:\n${extraNote}\n`
+    : "";
   const userMessage = `Project: ${projectName} — ${projectDescription}
 
 CURRENT ${filePath} (line numbers are FOR YOUR REFERENCE ONLY — do not include them in SEARCH/REPLACE):
 ${numberedFile}
-
+${noteBlock}
 ADD this feature with the MINIMUM diff. Do NOT rewrite the file. Do NOT rename existing variables or handlers:
 - ${featureInstruction}
 
-Reply with one or more SEARCH/REPLACE blocks. Nothing else.`;
+Reply with ONE SEARCH/REPLACE block (or the word DONE if already complete). Nothing else.`;
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,

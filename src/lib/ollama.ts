@@ -250,6 +250,99 @@ export async function callOllama(
 }
 
 /**
+ * Vision-aware companion to `callOllama`. Sends one or more base64-encoded
+ * images alongside the user message. Non-streaming (vision models tend to
+ * stream poorly through Ollama's NDJSON, and we only need a short reply).
+ *
+ * The caller is responsible for verifying the model supports vision —
+ * pass a model where `modelCapabilities(model).vision === true`.
+ */
+export async function callOllamaVision(
+  model: string,
+  role: AgentRole,
+  systemPrompt: string,
+  userMessage: string,
+  imagesBase64: string[],
+  overrides?: { numPredict?: number; prefill?: string },
+): Promise<{
+  text: string;
+  tokens: number;
+  durationMs: number;
+  prompt: string;
+}> {
+  const config = AGENT_CONFIGS[role];
+  const numPredict = overrides?.numPredict ?? config.numPredict;
+  const prefill = overrides?.prefill ?? ">>";
+
+  // Ollama's chat API accepts `images: string[]` on the user message
+  const messages = [
+    { role: "system", content: systemPrompt },
+    {
+      role: "user",
+      content: userMessage,
+      images: imagesBase64,
+    },
+    { role: "assistant", content: prefill },
+  ];
+
+  const promptLog = `[SYSTEM]\n${systemPrompt}\n\n[USER]\n${userMessage}\n\n[IMAGES] ${imagesBase64.length} attached (${imagesBase64.reduce((n, b) => n + b.length, 0)} base64 chars)\n\n[PREFILL]\n${prefill}`;
+
+  const body = {
+    model,
+    messages,
+    stream: false,
+    keep_alive: KEEP_ALIVE,
+    think: false,
+    options: {
+      temperature: config.temperature,
+      num_predict: numPredict,
+      num_ctx: NUM_CTX,
+    },
+    stop: [">>END"],
+  };
+
+  const controller = new AbortController();
+  const timeout = setTimeout(() => controller.abort(), 5 * 60 * 1000);
+
+  let res: Response;
+  try {
+    res = await fetch(`${OLLAMA_BASE_URL}/api/chat`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(body),
+      signal: controller.signal,
+    });
+  } catch (err: unknown) {
+    clearTimeout(timeout);
+    if (err instanceof Error && err.name === "AbortError") {
+      throw new OllamaError("Vision LLM call timed out after 5 minutes");
+    }
+    throw err;
+  } finally {
+    clearTimeout(timeout);
+  }
+
+  if (!res.ok) {
+    const errText = await res.text();
+    throw new OllamaError(
+      `Ollama vision API error (${res.status}): ${errText}`,
+    );
+  }
+
+  const data: OllamaResponse = await res.json();
+  const fullText = prefill + (data.message?.content || "");
+
+  return {
+    text: fullText,
+    prompt: promptLog,
+    tokens: data.eval_count || 0,
+    durationMs: data.total_duration
+      ? Math.round(data.total_duration / 1_000_000)
+      : 0,
+  };
+}
+
+/**
  * Check if Ollama is running and the model is available.
  */
 export async function checkOllamaHealth(
