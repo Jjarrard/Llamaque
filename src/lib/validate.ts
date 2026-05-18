@@ -29,6 +29,13 @@ export function autoRepairOutput(
   let code = output;
   const fixes: string[] = [];
 
+  // Strip >> TTM protocol markers from line starts (model leaking protocol format into code)
+  // e.g. ">>  import React" → "import React"
+  if (/^>>[ \t]/m.test(code)) {
+    code = code.replace(/^>>[ \t]?/gm, "");
+    fixes.push("Stripped >> TTM line prefixes from code");
+  }
+
   // Strip markdown code fences (```tsx, ```javascript, ``` etc.)
   if (/^```\w*\s*$/m.test(code)) {
     code = code
@@ -106,6 +113,23 @@ export function autoRepairOutput(
         // Append missing closing characters
         code = code.trimEnd() + "\n" + close.repeat(count) + "\n";
         fixes.push(`Auto-closed ${count} unclosed ${name}(s)`);
+      } else if (count < 0 && ext === "css") {
+        // CSS-specific: strip trailing extra closing braces.
+        // The model frequently appends a stray `}` at the end of a CSS file.
+        // In CSS (unlike JS/TS) extra closers are almost always at the end and safe to remove.
+        let toRemove = -count;
+        code = code
+          .trimEnd()
+          .replace(new RegExp(`(\\${close}\\s*){0,${toRemove}}$`), (m) => {
+            const removed = (m.match(new RegExp(`\\${close}`, "g")) || [])
+              .length;
+            toRemove = removed; // actual count removed
+            return "";
+          })
+          .trimEnd();
+        if (toRemove > 0) {
+          fixes.push(`Stripped ${toRemove} extra closing ${name}(s)`);
+        }
       }
     }
   }
@@ -271,6 +295,22 @@ export function validateOutput(
     return { valid: false, reason: "Output too short (< 5 chars)" };
   }
 
+  // Reject code where most lines start with >> (TTM markers leaked into output)
+  const nonEmptyLinesForCheck = output
+    .split("\n")
+    .filter((l) => l.trim().length > 0);
+  const ttmPrefixedLines = nonEmptyLinesForCheck.filter((l) => /^>>/.test(l));
+  if (
+    nonEmptyLinesForCheck.length > 3 &&
+    ttmPrefixedLines.length / nonEmptyLinesForCheck.length > 0.4
+  ) {
+    return {
+      valid: false,
+      reason:
+        'Output has TTM protocol ">>" markers on most lines — model is outputting protocol format instead of code. Retry without >> prefixes.',
+    };
+  }
+
   // Detect prompt template echo — model parroted back the example placeholder
   const promptEchoPatterns = [
     /^\s*\(complete\s+\w[\w\s]*\)\s*$/i,
@@ -356,6 +396,43 @@ export function validateOutput(
           "HTML file is too short (< 50 chars). Expected a complete HTML document.",
       };
     }
+    // Detect JSX/React code injected inside a <script> tag.
+    // This happens when the model writes a React component into a plain .html file,
+    // putting `import React`, `export default function`, or JSX syntax inside <script>.
+    const scriptContentMatch = output.match(
+      /<script[^>]*>([\s\S]*?)<\/script>/gi,
+    );
+    if (scriptContentMatch) {
+      for (const block of scriptContentMatch) {
+        const inner = block.replace(/<script[^>]*>|<\/script>/gi, "");
+        const hasReactImport = /\bimport\s+React\b/.test(inner);
+        const hasExportDefault = /\bexport\s+default\b/.test(inner);
+        const hasJsxReturn =
+          /\breturn\s*\(?\s*<[A-Z]/.test(inner) ||
+          /\breturn\s*\(?\s*<[a-z][a-zA-Z]*[\s/>]/.test(inner);
+        if (hasReactImport || hasExportDefault || hasJsxReturn) {
+          return {
+            valid: false,
+            reason:
+              "HTML file contains a React/JSX component inside a <script> tag. " +
+              "Plain HTML files cannot run JSX — write vanilla JS or remove the .html file " +
+              "if a .tsx component already covers this.",
+          };
+        }
+        // Detect duplicate export default / function declarations in inline script
+        const exportMatches = (
+          inner.match(/\bexport\s+default\s+function\b/g) ?? []
+        ).length;
+        if (exportMatches > 1) {
+          return {
+            valid: false,
+            reason:
+              "HTML <script> block contains duplicate `export default function` declarations. " +
+              "This is not valid browser JavaScript.",
+          };
+        }
+      }
+    }
   }
 
   if (ext === "js" || ext === "ts") {
@@ -389,6 +466,70 @@ export function validateOutput(
   if (ext === "js" || ext === "ts" || ext === "jsx" || ext === "tsx") {
     const trimmed = output.trim();
     const isJsx = ext === "jsx" || ext === "tsx";
+
+    // Reject imports from parent directories ("../").
+    // All generated files live in a flat output directory — "../" paths are phantom
+    // hallucinations (e.g. import from "../store/...", "../types/...").
+    const upDirImportMatch = trimmed.match(
+      /^\s*import\s+.*?from\s+["']\.\.\/[^"']*["']/m,
+    );
+    if (upDirImportMatch) {
+      const offendingLine = upDirImportMatch[0].trim().slice(0, 80);
+      return {
+        valid: false,
+        reason:
+          `File imports from a parent directory ("../") which does not exist: ${offendingLine}. ` +
+          `All imports must be from "./" sibling files or installed packages. Remove the "../" import.`,
+      };
+    }
+
+    // Reject imports of non-browser / desktop-only packages.
+    // These are hallucinated dependencies that don't exist in a web project.
+    const BANNED_PACKAGES = [
+      "electron",
+      "electron-clipboard",
+      "child_process",
+      "worker_threads",
+      "readline",
+      "repl",
+      "cluster",
+      "dgram",
+      // web-audio-api is a Node.js polyfill — in browsers use new AudioContext() directly
+      "web-audio-api",
+      // soundjs / tone.js hallucinations
+      "soundjs",
+      // UI libraries not installed in this project
+      "@material-ui/core",
+      "@material-ui/icons",
+      "@mui/material",
+      "@mui/icons-material",
+      "@mui/system",
+      // State management not installed
+      "react-redux",
+      "redux",
+      "zustand",
+      "mobx",
+      "recoil",
+      // Routing not installed
+      "react-router-dom",
+      "react-router",
+    ];
+    const bannedImportMatch = trimmed.match(
+      new RegExp(
+        `^\\s*import\\s+.*?from\\s+["'](${BANNED_PACKAGES.map((p) => p.replace(/[-/]/g, "\\$&")).join("|")})["']`,
+        "m",
+      ),
+    );
+    if (bannedImportMatch) {
+      const pkg = bannedImportMatch[1];
+      return {
+        valid: false,
+        reason:
+          `File imports from "${pkg}" which is not available in a browser/React project. ` +
+          `Remove this import and use browser-native APIs instead (e.g. navigator.clipboard for clipboard access).`,
+      };
+    }
+
     if (
       trimmed.startsWith("<!DOCTYPE") ||
       trimmed.startsWith("<html") ||
@@ -485,6 +626,18 @@ export function validateOutput(
       const scaffoldResult = detectJsScaffold(trimmed);
       if (!scaffoldResult.valid) return scaffoldResult;
     }
+    // A JS/TS file can only have one export default
+    if (ext === "tsx" || ext === "jsx" || ext === "ts" || ext === "js") {
+      const exportDefaultCount = (trimmed.match(/\bexport\s+default\b/g) ?? [])
+        .length;
+      if (exportDefaultCount > 1) {
+        return {
+          valid: false,
+          reason: `File has ${exportDefaultCount} "export default" declarations — only one is allowed per file. Each step must edit the same component, not append new ones.`,
+        };
+      }
+    }
+
     // Check for duplicate TOP-LEVEL declarations only.
     // Block-scoped duplicates inside different functions are valid and should not fail.
     const declarations = collectTopLevelJsDeclarations(trimmed);
@@ -499,6 +652,59 @@ export function validateOutput(
         valid: false,
         reason: `Component file has duplicate declarations: ${names}. Each function/variable must be declared only once.`,
       };
+    }
+
+    // TSX-specific scoping check: detect setState calls in components that lack
+    // the matching useState.  Pattern: `setFoo(` appears in a component function
+    // body but `const [, setFoo] = useState` (or equivalent) is absent.
+    // This catches the runtime-crash pattern where a parent calls a child's state
+    // setter that was never declared in the parent.
+    if (isJsx) {
+      // Browser-native functions that start with "set" but are NOT React state setters.
+      // These must be excluded from the useState scoping check.
+      const BROWSER_SET_GLOBALS = new Set([
+        "setInterval",
+        "setTimeout",
+        "setImmediate",
+        "setItem", // localStorage.setItem
+        "setAttribute",
+        "setProperty", // CSSStyleDeclaration
+        "setPointerCapture",
+        "setCustomValidity",
+        "setSelectionRange",
+        "setRangeText",
+        "setRequestHeader",
+        "setTransform",
+        "setTime",
+        "setDate",
+        "setMonth",
+        "setFullYear",
+        "setHours",
+        "setMinutes",
+        "setSeconds",
+        "setMilliseconds",
+      ]);
+
+      // Collect every `setXxx(` call in the file
+      const setterCalls = trimmed.match(/\bset([A-Z][a-zA-Z0-9]*)\s*\(/g) ?? [];
+      for (const call of setterCalls) {
+        // Extract the setter name e.g. "setCount" from "setCount("
+        const setterName = call.replace(/\s*\($/, "");
+        // Skip known browser globals
+        if (BROWSER_SET_GLOBALS.has(setterName)) continue;
+        // Build the matching useState pattern: const [anything, setFoo] = useState
+        const useStatePat = new RegExp(
+          `const\\s+\\[\\s*\\w+\\s*,\\s*${setterName}\\s*\\]\\s*=\\s*use(?:State|Reducer)`,
+        );
+        if (!useStatePat.test(trimmed)) {
+          return {
+            valid: false,
+            reason:
+              `Component calls \`${setterName}()\` but never declares the matching \`const [state, ${setterName}] = useState(...)\`. ` +
+              `Add the useState declaration or remove the setter call.`,
+          };
+        }
+      }
     }
   }
 

@@ -8,18 +8,18 @@ import { parseTTM, BreakdownBlock, ReadyBlock } from "@/lib/protocol";
  * Depth-2 tasks are automatically marked READY by the pipeline.
  * Tasks target files from the project's file manifest.
  */
-const SYSTEM_PROMPT = `Break this epic into 2-3 specific, actionable tasks.
-Each task must describe a concrete piece of work:
-- What exactly to build or write
-- What the expected output looks like
-- What makes it "done" (measurable/verifiable)
-Keep tasks small enough for one focused work session.
+const SYSTEM_PROMPT = `Break this epic into 1-2 specific, actionable task titles.
+Use 2 tasks only if there are genuinely 2 non-overlapping deliverables. Use 1 task for simple or already-specific epics.
+Each task must be a SHORT ACTION PHRASE (5-12 words) naming a concrete deliverable: a component, function, state variable, event handler, or style rule.
+Do NOT include prose like "What exactly to build:" or "Expected output:" — just the task title itself.
+Do NOT copy the example tasks below — write tasks that match the actual epic.
+CRITICAL: Only create tasks for what the epic explicitly describes. Do NOT add features or scope not mentioned.
 You MUST reply with >>BREAKDOWN.
 
-Reply:
+Example (for a different project):
 >>BREAKDOWN
-- task: "specific actionable task"
-- task: "specific actionable task"
+- task: "Add submit button with form validation handler"
+- task: "Render user list with name and email columns"
 >>END`;
 
 export async function runManager(

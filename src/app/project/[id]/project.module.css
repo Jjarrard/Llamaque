@@ -503,6 +503,32 @@
   color: #f472b6;
 }
 
+/* New agent color classes */
+.logAgentARCH {
+  color: #38bdf8;
+}
+.logAgentTDD {
+  color: #34d399;
+}
+.logAgentJUDGE {
+  color: #fb923c;
+}
+.logAgentSUM {
+  color: #a78bfa;
+}
+.logAgentCHK {
+  color: #facc15;
+}
+.logAgentFBK {
+  color: #f9a8d4;
+}
+.logAgentIMP {
+  color: #4ade80;
+}
+.logAgentPLAN {
+  color: #67e8f9;
+}
+
 .logMessage {
   color: var(--text-muted);
 }
@@ -627,6 +653,57 @@
   border-radius: var(--radius);
   font-size: 0.85rem;
   flex-wrap: wrap;
+  transition:
+    background 0.3s,
+    border-color 0.3s;
+}
+
+.actionBarRunning {
+  background: rgba(99, 102, 241, 0.1);
+  border-color: rgba(99, 102, 241, 0.5);
+  animation: runningBorder 2s ease-in-out infinite;
+}
+
+@keyframes runningBorder {
+  0%,
+  100% {
+    border-color: rgba(99, 102, 241, 0.5);
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0);
+  }
+  50% {
+    border-color: rgba(129, 140, 248, 0.9);
+    box-shadow: 0 0 8px 1px rgba(99, 102, 241, 0.2);
+  }
+}
+
+.runningDot {
+  display: inline-block;
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: runningDotPulse 1s ease-in-out infinite;
+}
+
+@keyframes runningDotPulse {
+  0%,
+  100% {
+    transform: scale(1);
+    opacity: 1;
+    box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.6);
+  }
+  50% {
+    transform: scale(1.2);
+    opacity: 1;
+    box-shadow: 0 0 0 5px rgba(99, 102, 241, 0);
+  }
+}
+
+.actionBarLabelRunning {
+  color: var(--accent-hover);
+  font-weight: 600;
+  letter-spacing: 0.01em;
 }
 
 .actionBarStatus {
@@ -648,6 +725,18 @@
   animation: pulse 1.2s infinite;
   font-size: 0.75rem;
   line-height: 1;
+  flex-shrink: 0;
+}
+
+.elapsedBadge {
+  font-size: 0.7rem;
+  font-family: var(--font-mono, monospace);
+  background: rgba(99, 102, 241, 0.15);
+  color: var(--accent-hover);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(99, 102, 241, 0.3);
+  white-space: nowrap;
   flex-shrink: 0;
 }
 
@@ -1536,4 +1625,329 @@
   outline: none;
   font-family: inherit;
   line-height: 1.55;
+}
+
+/* ── Activity Banner ── */
+.activityBanner {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  background: rgba(99, 102, 241, 0.08);
+  border: 1px solid rgba(99, 102, 241, 0.25);
+  border-radius: var(--radius);
+  padding: 0.55rem 0.9rem;
+  margin-bottom: 0.75rem;
+  font-size: 0.82rem;
+  overflow: hidden;
+}
+
+.activityPulse {
+  display: inline-block;
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: pulse 1s infinite;
+}
+
+.activityAgent {
+  font-weight: 700;
+  font-family: var(--font-mono, monospace);
+  font-size: 0.76rem;
+  white-space: nowrap;
+  flex-shrink: 0;
+}
+
+.activityMessage {
+  color: var(--text);
+  flex: 1;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.activityStage {
+  font-size: 0.68rem;
+  font-weight: 700;
+  background: rgba(99, 102, 241, 0.2);
+  color: var(--accent-hover);
+  padding: 0.1rem 0.45rem;
+  border-radius: 999px;
+  border: 1px solid rgba(99, 102, 241, 0.35);
+  white-space: nowrap;
+  flex-shrink: 0;
+  font-family: var(--font-mono, monospace);
+  letter-spacing: 0.04em;
+}
+
+/* ── File Status Panel ── */
+.fileStatusPanel {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  padding: 0.7rem 0.9rem;
+}
+
+.fileStatusHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 0.5rem;
+}
+
+.fileStatusTitle {
+  font-size: 0.75rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+.fileStatusCount {
+  font-size: 0.72rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+}
+
+.fileStatusGrid {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 0.35rem 0.6rem;
+}
+
+.fileStatusItem {
+  display: flex;
+  align-items: center;
+  gap: 0.3rem;
+  font-size: 0.72rem;
+  font-family: var(--font-mono, monospace);
+  padding: 0.2rem 0.5rem;
+  border-radius: 4px;
+  background: rgba(255, 255, 255, 0.03);
+  border: 1px solid var(--border);
+}
+
+.fileStatus_writing {
+  background: rgba(99, 102, 241, 0.08);
+  border-color: rgba(99, 102, 241, 0.3);
+}
+
+.fileStatus_done {
+  background: rgba(34, 197, 94, 0.06);
+  border-color: rgba(34, 197, 94, 0.2);
+}
+
+.fileStatusDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--border);
+  flex-shrink: 0;
+}
+
+.fileStatus_writing .fileStatusDot {
+  background: var(--accent);
+  animation: pulse 1s infinite;
+}
+
+.fileStatus_done .fileStatusDot {
+  background: var(--success);
+}
+
+.fileStatusPath {
+  color: var(--text-muted);
+  max-width: 160px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.fileStatus_writing .fileStatusPath {
+  color: var(--accent-hover);
+}
+
+.fileStatus_done .fileStatusPath {
+  color: var(--text);
+}
+
+.fileStatusWriting {
+  color: var(--accent);
+  font-size: 0.65rem;
+  animation: pulse 1.2s infinite;
+}
+
+.fileStatusDoneLabel {
+  color: var(--success);
+  font-size: 0.7rem;
+}
+
+/* ── Log panel enhancements ── */
+.logPanelTitleRow {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  margin-bottom: 0.35rem;
+}
+
+.logCount {
+  font-size: 0.7rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+}
+
+.logLiveIndicator {
+  color: var(--success);
+  font-weight: 700;
+  font-size: 0.65rem;
+  letter-spacing: 0.06em;
+  animation: pulse 1.4s infinite;
+}
+
+.logTimestamp {
+  font-size: 0.63rem;
+  color: var(--text-muted);
+  font-family: var(--font-mono, monospace);
+  flex-shrink: 0;
+  opacity: 0.55;
+  min-width: 5.5rem;
+}
+
+/* ── Task panel stats ── */
+.taskPanelStats {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.4rem;
+  margin-left: 0.5rem;
+  font-size: 0.72rem;
+  font-weight: 400;
+  font-family: var(--font-mono, monospace);
+}
+
+.taskStatDone {
+  color: var(--success);
+}
+
+.taskStatExecuting {
+  color: var(--accent);
+  animation: pulse 1.2s infinite;
+}
+
+.taskStatStuck {
+  color: var(--danger);
+}
+
+.taskStatTotal {
+  color: var(--text-muted);
+}
+
+/* ── Executing task row highlight ── */
+.taskRowExecuting {
+  background: rgba(99, 102, 241, 0.06);
+  border-radius: 4px;
+  outline: 1px solid rgba(99, 102, 241, 0.2);
+  margin: -1px -4px;
+  padding-left: 4px;
+  padding-right: 4px;
+}
+
+/* ── Live Model Output stream panel ── */
+.streamPanel {
+  background: #0a0a0d;
+  border: 1px solid rgba(99, 102, 241, 0.4);
+  border-radius: var(--radius);
+  margin-bottom: 0.75rem;
+  overflow: hidden;
+}
+
+.streamPanelHeader {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0.45rem 0.75rem;
+  background: rgba(99, 102, 241, 0.08);
+  border-bottom: 1px solid rgba(99, 102, 241, 0.2);
+}
+
+.streamPanelTitle {
+  display: flex;
+  align-items: center;
+  gap: 0.4rem;
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--accent-hover);
+  text-transform: uppercase;
+  letter-spacing: 0.07em;
+}
+
+.streamPanelDot {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: var(--accent);
+  flex-shrink: 0;
+  animation: runningDotPulse 0.8s ease-in-out infinite;
+}
+
+.streamPanelWaiting {
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  border: 1.5px solid var(--text-muted);
+  flex-shrink: 0;
+  animation: pulse 1.4s ease-in-out infinite;
+}
+
+.streamPanelChars {
+  font-size: 0.65rem;
+  font-family: var(--font-mono, monospace);
+  color: var(--text-muted);
+}
+
+.streamPanelOutput {
+  margin: 0;
+  padding: 0.65rem 0.85rem;
+  font-size: 0.73rem;
+  font-family: var(--font-mono, monospace);
+  line-height: 1.6;
+  color: #c4c4cc;
+  white-space: pre-wrap;
+  word-break: break-word;
+  max-height: 260px;
+  overflow-y: auto;
+  tab-size: 2;
+}
+
+.streamPanelEmpty {
+  color: var(--text-muted);
+  opacity: 0.5;
+  font-style: italic;
+}
+
+/* Blinking cursor at end of stream */
+.streamCursor {
+  display: inline-block;
+  width: 2px;
+  height: 0.85em;
+  background: var(--accent);
+  vertical-align: text-bottom;
+  margin-left: 1px;
+  animation: blink 1s step-end infinite;
+}
+
+@keyframes blink {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0;
+  }
 }

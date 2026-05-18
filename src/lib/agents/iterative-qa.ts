@@ -8,12 +8,14 @@ If it looks correct, reply: NO_ISSUES
 Reply:
 >>ISSUE
 file: (filename)
+line: (approximate line number where the issue is)
 problem: (what is wrong)
 fix: (how to fix it)
 >>END`;
 
 export interface SingleIssue {
   file: string;
+  line?: number;
   problem: string;
   fix: string;
 }
@@ -65,10 +67,13 @@ export async function runIterativeQA(
   const problemMatch = text.match(/problem:\s*(.+)/i);
   const fixMatch = text.match(/fix:\s*(.+)/i);
 
+  const lineMatch = text.match(/line:\s*(\d+)/i);
+
   if (fileMatch && problemMatch && fixMatch) {
     return {
       issue: {
-        file: fileMatch[1].trim().replace(/['"]/g, ""),
+        file: fileMatch[1].trim().replace(/['"]/, ""),
+        line: lineMatch ? parseInt(lineMatch[1], 10) : undefined,
         problem: problemMatch[1].trim(),
         fix: fixMatch[1].trim(),
       },

@@ -13,8 +13,9 @@ import { ManifestFile } from "@/db/schema";
  */
 
 const SYSTEM_PROMPT = `You are a software architect. Given a project description, decide what output files are needed.
-For each file specify: path, type (code/document/config/data), language, and a one-line description.
-Order files by dependency (files that others depend on first).
+For each file specify: path, type (code/document/config/data), language, description, and which other files it imports from.
+Order files by dependency (leaf files with no imports first, root file last).
+CRITICAL: Only include files needed for features explicitly described. Do NOT add extra features, pages, or functionality not mentioned.
 
 Guidelines:
 - For simple apps or components: 1-3 files max
@@ -26,11 +27,15 @@ Guidelines:
 - A Python script = one main.py file (type: code, language: python)
 - A document = one output.md file (type: document, language: markdown)
 - Prefer fewer files. Small models work better with fewer targets.
+- imports: list ONLY other files in this manifest that this file directly imports. Leave empty if none.
+- IMPORTANT: If ANY file in the manifest has a .tsx or .jsx extension, do NOT include an index.html file.
+  React components render inside a host app — they do not need a standalone HTML page.
+  index.html is only appropriate for projects that have NO .tsx/.jsx files and instead use vanilla JS.
 
 Reply ONLY in this exact format:
 >>MANIFEST
-- path: "filename.ext" | type: "code" | language: "typescript" | description: "what this file does"
-- path: "filename.ext" | type: "document" | language: "markdown" | description: "what this file does"
+- path: "filename.ext" | type: "code" | language: "typescript" | description: "what this file does" | imports: []
+- path: "filename.ext" | type: "code" | language: "typescript" | description: "what this file does" | imports: ["OtherFile.tsx"]
 >>END`;
 
 export interface ArchitectResult {
@@ -74,12 +79,23 @@ function parseManifest(text: string): ManifestFile[] {
   const lines = content.split("\n");
 
   for (const line of lines) {
-    // Match: - path: "X" | type: "Y" | language: "Z" | description: "W"
+    // Match: - path: "X" | type: "Y" | language: "Z" | description: "W" | imports: [...]
     const match = line.match(
       /path:\s*"([^"]+)"\s*\|\s*type:\s*"([^"]+)"\s*\|\s*language:\s*"([^"]+)"\s*\|\s*description:\s*"([^"]+)"/i,
     );
     if (match) {
       const type = match[2].trim().toLowerCase();
+
+      // Extract imports array if present: imports: ["A.tsx", "B.tsx"]
+      const importsMatch = line.match(/imports:\s*\[([^\]]*)\]/i);
+      const imports: string[] = [];
+      if (importsMatch && importsMatch[1].trim()) {
+        for (const raw of importsMatch[1].split(",")) {
+          const name = raw.trim().replace(/['"]/g, "");
+          if (name) imports.push(name);
+        }
+      }
+
       files.push({
         path: match[1].trim(),
         type: (["code", "document", "config", "data"].includes(type)
@@ -87,7 +103,24 @@ function parseManifest(text: string): ManifestFile[] {
           : "code") as ManifestFile["type"],
         language: match[3].trim().toLowerCase(),
         description: match[4].trim(),
+        imports: imports.length > 0 ? imports : undefined,
       });
+    }
+  }
+
+  // Post-parse guard: if any .tsx/.jsx file is present, drop index.html.
+  // A React component cannot be loaded from a raw HTML file without a bundler,
+  // and the model often writes JSX inside <script> tags when both are present.
+  const hasTsx = files.some((f) => /\.(tsx|jsx)$/i.test(f.path));
+  if (hasTsx) {
+    const before = files.length;
+    const filtered = files.filter(
+      (f) => !/(?:^|[/\\])index\.(html?|js)$/i.test(f.path),
+    );
+    if (filtered.length < before) {
+      // Keep the filtered list
+      files.length = 0;
+      files.push(...filtered);
     }
   }
 

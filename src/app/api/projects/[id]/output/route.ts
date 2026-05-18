@@ -78,17 +78,15 @@ export async function GET(
 
   // For TSX files, generate a preview HTML that loads React CDN + Babel standalone
   if (ext === ".tsx" || ext === ".jsx") {
-    // Strip import statements (React is provided via CDN globals)
-    // and export keywords (not valid outside modules)
-    const componentCode = content
-      .replace(/^\s*import\s+.*?from\s+["'].*?["'];?\s*$/gm, "")
-      .replace(/^\s*import\s+React[\s,{].*?;?\s*$/gm, "")
-      .replace(/^\s*export\s+default\s+/gm, "")
-      .replace(/^\s*export\s+(?=function|const|class)/gm, "");
+    // Strip >> TTM protocol markers that may have leaked into the file
+    const cleanedContent = content.replace(/^>>[ \t]?/gm, "");
+    // Bundle local sibling imports so <Sibling /> references resolve in the preview.
+    // Sibling files are inlined before the main component code.
+    const componentCode = bundleLocalImports(cleanedContent, outputDir);
 
     // Detect the component function name from the source code
     // Handles: export default function Foo(), function Foo(), const Foo =
-    const fnNameMatch = content.match(
+    const fnNameMatch = cleanedContent.match(
       /export\s+default\s+function\s+(\w+)|(?:^|\n)\s*function\s+(\w+)/,
     );
     const componentName = fnNameMatch?.[1] || fnNameMatch?.[2] || "Component";
@@ -193,6 +191,59 @@ export async function GET(
   return new NextResponse(content, {
     headers: { "Content-Type": contentType },
   });
+}
+
+/**
+ * Inline local sibling imports for the Babel standalone preview.
+ * Recursively reads ./Sibling.tsx/ts and prepends its stripped code before
+ * the main component so <Sibling /> references resolve without a bundler.
+ */
+function bundleLocalImports(
+  content: string,
+  outputDir: string,
+  seen: Set<string> = new Set(),
+  depth = 0,
+): string {
+  if (depth > 3) return content;
+
+  const importedPaths: string[] = [];
+  // Collect and remove local (./...) import lines
+  let stripped = content.replace(
+    /^\s*import\s+(?:[\w*{},\s]+)\s+from\s+["'](\.\/[^"']+)["'];?\s*$/gm,
+    (_, p: string) => {
+      importedPaths.push(p);
+      return "";
+    },
+  );
+
+  // Strip remaining external imports and export modifiers
+  stripped = stripped
+    .replace(/^\s*import\s+[\s\S]*?from\s+["'].*?["'];?\s*$/gm, "")
+    .replace(/^\s*import\s+["'].*?["'];?\s*$/gm, "")
+    .replace(/^\s*export\s+default\s+\w+;\s*$/gm, "") // bare "export default Foo;"
+    .replace(/^\s*export\s+default\s+/gm, "")
+    .replace(
+      /^\s*export\s+(?=function|const|class|let|var|type|interface)/gm,
+      "",
+    );
+
+  const chunks: string[] = [];
+  for (const importPath of importedPaths) {
+    const base = importPath.replace(/\.\w+$/, "");
+    for (const ext of [".tsx", ".ts", ".jsx", ".js"]) {
+      const candidate = path.join(outputDir, base + ext);
+      if (fs.existsSync(candidate) && !seen.has(candidate)) {
+        seen.add(candidate);
+        let sib = fs.readFileSync(candidate, "utf-8");
+        sib = sib.replace(/^>>[ \t]?/gm, "");
+        sib = bundleLocalImports(sib, outputDir, seen, depth + 1);
+        chunks.push(sib);
+        break;
+      }
+    }
+  }
+
+  return chunks.join("\n\n") + "\n\n" + stripped;
 }
 
 /** Simple Markdown to HTML renderer (no external deps) */

@@ -31,7 +31,7 @@ import {
   Task,
   ManifestFile,
 } from "@/db/schema";
-import { eq, and, asc } from "drizzle-orm";
+import { eq, and, asc, sql } from "drizzle-orm";
 import { runProjectManager } from "@/lib/agents/project-manager";
 import { runReviewer } from "@/lib/agents/reviewer";
 import { runImprover } from "@/lib/agents/improver";
@@ -49,12 +49,44 @@ import {
   runReframeTactic,
 } from "@/lib/agents/cleaner";
 import { runIterativeQA } from "@/lib/agents/iterative-qa";
+import {
+  runEditor,
+  runFeedbackEditor,
+  applyEdit,
+  extractFileWindow,
+  numberLines,
+  stripLineNumberPrefixes,
+} from "@/lib/agents/editor";
 import { runTestWriter } from "@/lib/agents/test-writer";
+import { runSummariser } from "@/lib/agents/summariser";
+import { runPlanner } from "@/lib/agents/planner";
+import { runFeedbackPlanner } from "@/lib/agents/feedback-planner";
+import { runContractDesigner } from "@/lib/agents/contract-designer";
+import { checkTypeScriptSyntax } from "@/lib/ops/compiler";
 import { validateOutput, autoRepairOutput } from "@/lib/validate";
+import { locateWindows, hashString, LocateCandidate } from "@/lib/locator";
+import {
+  derivePostconditions,
+  checkPostconditions,
+  formatFailureMessage,
+} from "@/lib/postconditions";
+import {
+  appendLedgerItem,
+  updateLedgerItem,
+  initLedger,
+  finalizeLedger,
+  LedgerItemStatus,
+} from "@/lib/ledger";
 import { runTests, getFirstFailure, TestRunResult } from "@/lib/test-runner";
 import { callOllama as callOllamaFn } from "@/lib/ollama";
 import { isVagueOrCircular, extractReferences, parseTTM } from "@/lib/protocol";
+import { buildWaves, parseImportDeps } from "@/lib/deps";
 import { getTasksForStep, getUncoveredTasks } from "@/lib/execute-utils";
+import {
+  streamingStorage,
+  setStreamText,
+  clearStreamText,
+} from "@/lib/stream-state";
 import fs from "fs";
 import path from "path";
 
@@ -64,11 +96,11 @@ const MAX_TASKS = 200;
 const MAX_RETRIES = 2;
 const MAX_PARSE_RETRIES = 2;
 /** Max bullet points per file spec — keeps Developer prompt short */
-const MAX_REQUIREMENTS = 8;
+const MAX_REQUIREMENTS = 6;
 /** Max features the Manager can produce per epic */
-const MAX_SUBTASKS = 3;
+const MAX_SUBTASKS = 2;
 /** Max epics from PM */
-const MAX_EPICS = 5;
+const MAX_EPICS = 4;
 
 export type PipelineStage =
   | "all"
@@ -101,6 +133,17 @@ export class Pipeline {
   private deterministicDraftByFile: Record<string, string> = {};
   /** Dynamic file manifest — set by Architect agent or inferred from description */
   private manifest: ManifestFile[] = [];
+  /** Shared TypeScript type definitions produced by ContractDesigner (may be empty) */
+  private contractSnippet: string = "";
+  /** Per-file summaries produced after each file completes during Execute.
+   * Injected into subsequent files' first Developer step as cross-file context. */
+  private fileContextSummaries: Record<string, string> = {};
+  /**
+   * Set by runJudgePhase() after Execute. Controls whether runFullQA skips
+   * the expensive vitest pass (when output is clearly insufficient).
+   * Defaults to "proceed" so feedback/qa-only runs always get full QA.
+   */
+  private judgeVerdict: "proceed" | "warn" | "skip_vitest" = "proceed";
 
   constructor(projectId: number, model: string, onEvent: EventCallback) {
     this.projectId = projectId;
@@ -110,6 +153,7 @@ export class Pipeline {
 
   abort() {
     this.aborted = true;
+    clearStreamText(this.projectId);
   }
 
   /** Mark a user-facing stage as complete in the project record */
@@ -120,11 +164,17 @@ export class Pipeline {
     const stages: string[] = JSON.parse(project?.completedStages || "[]");
     if (!stages.includes(stage)) {
       stages.push(stage);
-      await db
-        .update(projects)
-        .set({ completedStages: JSON.stringify(stages) })
-        .where(eq(projects.id, this.projectId));
     }
+    // Always clear currentStage when a stage completes so the UI shows
+    // the fallback (first non-done stage) between stage transitions.
+    await db
+      .update(projects)
+      .set({
+        completedStages: JSON.stringify(stages),
+        currentStage: null,
+        currentActivity: null,
+      })
+      .where(eq(projects.id, this.projectId));
   }
 
   /** Appends custom instructions to a message if present */
@@ -137,9 +187,39 @@ export class Pipeline {
     this.onEvent({ type, data });
   }
 
-  /** Emit a stage-start marker so the UI can highlight the active stage */
+  /** Write the active stage to the DB so the UI can highlight it immediately. */
   private async emitStageStart(stage: string) {
+    await db
+      .update(projects)
+      .set({
+        currentStage: stage,
+        stageStartedAt: Date.now(),
+        currentActivity: `Starting ${stage}...`,
+        activityCounter: 0,
+      })
+      .where(eq(projects.id, this.projectId));
     await this.log("STAGE", stage);
+  }
+
+  /**
+   * Write a short freetext message describing what the pipeline is doing
+   * RIGHT NOW. The UI polls this and displays it under the stage bar so the
+   * user always knows what the model/system is up to.
+   */
+  private async emitActivity(message: string) {
+    // Truncate to keep UI tidy
+    const msg = message.length > 200 ? message.slice(0, 197) + "..." : message;
+    try {
+      await db
+        .update(projects)
+        .set({
+          currentActivity: msg,
+          activityCounter: sql`${projects.activityCounter} + 1`,
+        })
+        .where(eq(projects.id, this.projectId));
+    } catch {
+      // Activity tracking is best-effort — never block the pipeline
+    }
   }
 
   private async log(
@@ -163,6 +243,12 @@ export class Pipeline {
       rawPrompt: rawPrompt || null,
       rawResponse: rawResponse || null,
     });
+    // Every log line is a real event — mirror it into the activity bar so the
+    // user always sees what's happening. Skip pure STAGE markers (emitStageStart
+    // already wrote a "Starting X..." activity).
+    if (agent !== "STAGE") {
+      await this.emitActivity(`[${agent}] ${message}`);
+    }
   }
 
   private outputDir(): string {
@@ -310,6 +396,25 @@ export default function Component() {
   }
 
   /**
+   * ContractDesigner phase — runs once after Architect.
+   * For multi-file TS projects, produces a compact shared-types snippet
+   * that gets injected into every subsequent Developer prompt.
+   * Silent no-op on failure or single-file/non-TS projects.
+   */
+  private async runContractDesignerPhase() {
+    const snippet = await runContractDesigner(
+      this.model,
+      this.projectName,
+      this.projectDescription,
+      this.manifest,
+    );
+    if (snippet) {
+      this.contractSnippet = snippet;
+      await this.log("ARCH", `Shared types defined:\n${snippet}`);
+    }
+  }
+
+  /**
    * Map a task's filePath/description to one of the manifest files.
    * Falls back to the first manifest file if no match is found.
    */
@@ -347,6 +452,28 @@ export default function Component() {
   // ─────────────────────────────────────────────
 
   async run(
+    stage: PipelineStage = "all",
+    breakdownDepth?: number,
+    feedback?: string,
+  ) {
+    const projectId = this.projectId;
+    // Wrap the entire pipeline in an AsyncLocalStorage context so callOllama
+    // can stream tokens back to the UI without any changes to agent call sites.
+    return streamingStorage.run(
+      {
+        onChunk: (token: string) => {
+          setStreamText(projectId, token, "LLM");
+        },
+        onActivity: (message: string) => {
+          // Fire-and-forget — don't await in the hot path
+          void this.emitActivity(message);
+        },
+      },
+      () => this._runInner(stage, breakdownDepth, feedback),
+    );
+  }
+
+  private async _runInner(
     stage: PipelineStage = "all",
     breakdownDepth?: number,
     feedback?: string,
@@ -414,6 +541,7 @@ export default function Component() {
         await this.runArchitectPhase();
       }
       await this.createScaffold();
+      await this.runContractDesignerPhase();
       await this.markStageComplete("architect");
 
       if (stage === "architect") {
@@ -444,6 +572,7 @@ export default function Component() {
       await this.emitStageStart("architect");
       await this.runArchitectPhase();
       await this.createScaffold();
+      await this.runContractDesignerPhase();
       await this.markStageComplete("architect");
       await this.log("SYS", "Architect complete. File structure updated.");
       await this.pauseAndDone();
@@ -485,7 +614,7 @@ export default function Component() {
       await this.markStageComplete("feedback");
       await db
         .update(projects)
-        .set({ status: "done" })
+        .set({ status: "done", currentStage: null, currentActivity: null })
         .where(eq(projects.id, this.projectId));
       this.emit("pipeline_done", { projectId: this.projectId });
       return;
@@ -499,7 +628,7 @@ export default function Component() {
       await this.markStageComplete("qa");
       await db
         .update(projects)
-        .set({ status: "done" })
+        .set({ status: "done", currentStage: null, currentActivity: null })
         .where(eq(projects.id, this.projectId));
       this.emit("pipeline_done", { projectId: this.projectId });
       return;
@@ -571,23 +700,25 @@ export default function Component() {
       return;
     }
 
-    // ── TDD (test generation) ──
+    // ── TDD + Execute ──
+    // TDD runs first (generate tests from requirements), then Execute writes
+    // the implementation. This is true TDD: tests define the contract,
+    // code fulfils it.
     if (stage === "all" || stage === "tdd" || stage === "execute") {
       const fileSpecs = await this.prepareFileSpecs();
 
+      // ── TDD: generate test files ──
       if (stage === "all" || stage === "tdd") {
         await this.emitStageStart("tdd");
         await this.log("TDD", "Generating test files...");
         try {
           await this.runTDDPhase(fileSpecs);
         } catch (err) {
-          // TDD is optional — if the whole phase crashes (e.g. Ollama timeout),
-          // log and continue to Execute rather than pausing the pipeline.
           await this.log(
             "TDD",
             `Test generation phase failed: ${
               err instanceof Error ? err.message : String(err)
-            } — continuing to Execute`,
+            } — continuing`,
           );
         }
         await this.markStageComplete("tdd");
@@ -595,7 +726,7 @@ export default function Component() {
         if (stage === "tdd") {
           await this.log(
             "SYS",
-            "TDD complete. Tests generated. Run Execute to write code.",
+            "TDD complete. Tests generated. Run Execute to write the implementation.",
           );
           await this.pauseAndDone();
           return;
@@ -607,19 +738,18 @@ export default function Component() {
         return;
       }
 
-      // ── Execute (code generation) ──
+      // ── Execute: write code ──
       if (stage === "all" || stage === "execute") {
         await this.emitStageStart("execute");
         await this.log("SYS", "Executing — writing code for each file...");
         await this.runExecutePhase(fileSpecs);
         await this.markStageComplete("execute");
+        await this.runJudgePhase();
 
         if (stage === "execute") {
-          // After execute, auto-run QA
-          await this.emitStageStart("qa");
-          await this.log("SYS", "Running QA after execution...");
-          await this.runFullQA();
-          await this.markStageComplete("qa");
+          await this.log("SYS", "Execute complete. Review code, then run QA.");
+          await this.pauseAndDone();
+          return;
         }
       }
     }
@@ -644,9 +774,14 @@ export default function Component() {
 
     await db
       .update(projects)
-      .set({ status: stuck > 0 ? "paused" : "done" })
+      .set({
+        status: stuck > 0 ? "paused" : "done",
+        currentStage: null,
+        currentActivity: null,
+      })
       .where(eq(projects.id, this.projectId));
 
+    clearStreamText(this.projectId);
     this.emit("pipeline_done", {
       projectId: this.projectId,
       totalTasks: allTasks.length,
@@ -659,8 +794,9 @@ export default function Component() {
   private async pauseAndDone() {
     await db
       .update(projects)
-      .set({ status: "review" })
+      .set({ status: "review", currentStage: null, currentActivity: null })
       .where(eq(projects.id, this.projectId));
+    clearStreamText(this.projectId);
     this.emit("pipeline_done", { projectId: this.projectId });
   }
 
@@ -999,23 +1135,129 @@ export default function Component() {
   }
 
   /**
-   * Execute phase: write code for each file in manifest order.
+   * Build ordered execution waves from the manifest's import graph.
+   * Files with no cross-manifest dependencies go in wave 0; files that
+   * import from wave-0 files go in wave 1; and so on.
+   *
+   * Uses Kahn's topological sort. If a cycle is detected the remaining
+   * files are appended as a final sequential wave so execution always
+   * completes.
+   */
+  private buildDependencyWaves(): string[][] {
+    const files = this.getFileOrder();
+    if (files.length <= 1) return [files];
+
+    const outDir = this.outputDir();
+    const depMap = new Map<string, Set<string>>();
+
+    for (const fp of files) {
+      const manifestEntry = this.manifest.find((m) => m.path === fp);
+
+      // ── Primary: use architect-planned import graph ──
+      // The architect explicitly listed which files each file imports from.
+      // This is available before any code is written, so wave 0 correctly
+      // contains leaf files (no deps) and later waves contain dependents.
+      if (manifestEntry?.imports && manifestEntry.imports.length > 0) {
+        const planned = new Set<string>();
+        for (const imp of manifestEntry.imports) {
+          // Match by exact path or by basename (handles extension-less refs)
+          const exact = files.find((f) => f === imp);
+          if (exact) {
+            planned.add(exact);
+            continue;
+          }
+          const baseName = imp.replace(/\.\w+$/, "").toLowerCase();
+          const byBase = files.find(
+            (f) => f.replace(/\.\w+$/, "").toLowerCase() === baseName,
+          );
+          if (byBase) planned.add(byBase);
+        }
+        depMap.set(fp, planned);
+        continue;
+      }
+
+      // ── Fallback: scan already-written file content or description ──
+      let content = "";
+      try {
+        const fullPath = path.join(outDir, fp);
+        if (fs.existsSync(fullPath))
+          content = fs.readFileSync(fullPath, "utf-8");
+      } catch {
+        /* ignore */
+      }
+      const description = manifestEntry?.description ?? "";
+      const source = content || description;
+      depMap.set(fp, parseImportDeps(source, fp, files));
+    }
+
+    return buildWaves(files, depMap);
+  }
+
+  /** Summarise a completed file and store in fileContextSummaries (silent). */
+  private async summariseFile(filePath: string): Promise<void> {
+    const ext = filePath.split(".").pop()?.toLowerCase() ?? "";
+    if (!["ts", "tsx", "jsx"].includes(ext)) return;
+    const content = this.getCurrentFileContent(filePath);
+    if (!content || content.replace(/\s/g, "").length <= 150) return;
+    try {
+      const result = await runSummariser(
+        this.model,
+        filePath,
+        this.truncateForPrompt(content, 80),
+      );
+      if (result.block?.context) {
+        this.fileContextSummaries[filePath] = result.block.context;
+        await this.log("SUM", `${filePath}: ${result.block.context}`);
+      }
+    } catch {
+      // Silent — never block the pipeline on a summary failure
+    }
+  }
+
+  /**
+   * Execute phase: write code for each file, parallelising files that have
+   * no dependency on each other within the same wave.
    */
   private async runExecutePhase(
     fileSpecs: Record<string, { requirements: string[]; tasks: Task[] }>,
   ) {
-    for (const filePath of this.getFileOrder()) {
-      if (this.aborted) break;
-      const spec = fileSpecs[filePath];
-      if (!spec || spec.requirements.length === 0) continue;
+    const waves = this.buildDependencyWaves();
 
-      await this.executeSpec(filePath, spec.requirements, spec.tasks);
+    for (const wave of waves) {
+      if (this.aborted) break;
+      // Sort: feature files (utils.js etc.) before default-spec files (Counter.tsx etc.)
+      // so that when a default-spec file runs, sibling injection has real code to inject.
+      const sortedWave = [...wave].sort((a, b) => {
+        const aDefault = fileSpecs[a]?.requirements[0]?.startsWith(
+          Pipeline.DEFAULT_SPEC_TAG,
+        )
+          ? 1
+          : 0;
+        const bDefault = fileSpecs[b]?.requirements[0]?.startsWith(
+          Pipeline.DEFAULT_SPEC_TAG,
+        )
+          ? 1
+          : 0;
+        return aDefault - bDefault;
+      });
+      for (const filePath of sortedWave) {
+        if (this.aborted) break;
+        const spec = fileSpecs[filePath];
+        if (spec && spec.requirements.length > 0) {
+          await this.executeSpec(filePath, spec.requirements, spec.tasks);
+          await this.summariseFile(filePath);
+        }
+      }
     }
   }
 
   /**
    * If manifest files have no features, generate a default spec.
+   * Default-spec files are tagged with a recognisable prefix so the execute
+   * loop can inject richer sibling-file context and avoid duplicates.
    */
+  static readonly DEFAULT_SPEC_TAG = "__DEFAULT_SPEC__";
+
   private ensureBasicSpecs(
     fileSpecs: Record<string, { requirements: string[]; tasks: Task[] }>,
     fileGroups: Record<string, Task[]>,
@@ -1030,7 +1272,8 @@ export default function Component() {
       ) {
         const fallbackTasks = fileGroups[file.path] || allTasks.slice(0, 1);
         const defaultReqs = [
-          `Build a complete ${file.path} for "${this.projectName}: ${this.projectDescription}"`,
+          // TAG: execute loop detects this to inject sibling code context
+          `${Pipeline.DEFAULT_SPEC_TAG}Write ${file.path} (${file.description}) for "${this.projectName}: ${this.projectDescription}"`,
           file.description,
         ];
 
@@ -1068,7 +1311,7 @@ export default function Component() {
 
         const isDuplicate = requirements.some(
           (existing) =>
-            this.stringSimilarity(existing.toLowerCase(), normalized) > 0.6,
+            this.stringSimilarity(existing.toLowerCase(), normalized) > 0.45,
         );
         if (isDuplicate) continue;
 
@@ -1118,6 +1361,20 @@ export default function Component() {
       taskGroup[0].id,
     );
 
+    // Chain-of-thought planning pass — one call, no retry, silent fallback.
+    // Only runs for multi-requirement files where an outline is actually useful.
+    let planOutline: string | null = null;
+    if (requirements.length >= 2) {
+      planOutline = await runPlanner(this.model, filePath, requirements);
+      if (planOutline) {
+        await this.log(
+          "PLAN",
+          `Implementation plan for ${filePath}:\n${planOutline}`,
+          taskGroup[0].id,
+        );
+      }
+    }
+
     // Phase A: Deterministic pre-pass (builds base draft)
     await this.applyDeterministicOpsPrepass(
       filePath,
@@ -1133,7 +1390,10 @@ export default function Component() {
 
     for (let i = 0; i < requirements.length; i++) {
       if (this.aborted) break;
-      const req = requirements[i];
+      // Strip the default-spec tag before the requirement reaches any prompt.
+      const req = requirements[i].startsWith(Pipeline.DEFAULT_SPEC_TAG)
+        ? requirements[i].slice(Pipeline.DEFAULT_SPEC_TAG.length)
+        : requirements[i];
 
       // Mark EXACTLY ONE task as executing for this step so the UI
       // never shows concurrent executing tasks. The display task is always
@@ -1174,6 +1434,82 @@ export default function Component() {
 
       // File-type-specific rules + UX quality reminders
       userMessage += `\n\n${getFileTypeRules(filePath)}`;
+
+      // Inject the skeleton on every step — not just step 0.
+      // Later steps see the current file in context, but for code files
+      // the skeleton anchors state variable names and handler names that
+      // the model might otherwise reinvent inconsistently on step 3+.
+      if (planOutline) {
+        userMessage += `\n\nFILE SKELETON (use these exact names):\n${planOutline}`;
+      }
+
+      // Inject shared type contracts on every step so cross-file types
+      // stay consistent. The snippet is tiny (3-6 lines) so prompt cost
+      // is negligible.
+      if (this.contractSnippet) {
+        userMessage += `\n\nSHARED TYPES (use these exact definitions):\n${this.contractSnippet}`;
+      }
+
+      // On the first step only, inject context from already-completed files.
+      // Priority order:
+      //   1. Actual code of files this file directly imports (planned dep graph)
+      //      — model sees exact export names, prop signatures, type shapes
+      //   2. LLM summaries of other completed files (broader awareness)
+      // Capped to keep prompts manageable on small models.
+      if (i === 0) {
+        const outDir = this.outputDir();
+        const manifestEntry = this.manifest.find((m) => m.path === filePath);
+        const plannedImports = manifestEntry?.imports ?? [];
+
+        // Inject actual code for direct dependencies (limit 3 files, 60 lines each)
+        const depSnippets: string[] = [];
+        for (const dep of plannedImports.slice(0, 3)) {
+          const depPath = path.join(outDir, dep);
+          if (fs.existsSync(depPath)) {
+            const depContent = fs.readFileSync(depPath, "utf-8").trim();
+            if (depContent.length > 50) {
+              const lines = depContent.split("\n").slice(0, 60).join("\n");
+              depSnippets.push(`--- ${dep} ---\n${lines}`);
+            }
+          }
+        }
+        if (depSnippets.length > 0) {
+          userMessage += `\n\nFILES YOU MUST IMPORT FROM (use these exact export names and prop types):\n${depSnippets.join("\n\n")}`;
+        }
+
+        // Default-spec files: inject actual code of ALL already-written siblings
+        // so the model doesn't re-implement components that already exist.
+        const isDefaultSpec = requirements[0]?.startsWith(
+          Pipeline.DEFAULT_SPEC_TAG,
+        );
+        if (isDefaultSpec) {
+          const siblingSnippets: string[] = [];
+          for (const [siblingPath] of Object.entries(
+            this.fileContextSummaries,
+          )) {
+            if (siblingPath === filePath) continue;
+            const siblingDiskPath = path.join(outDir, siblingPath);
+            if (fs.existsSync(siblingDiskPath)) {
+              const sibCode = fs.readFileSync(siblingDiskPath, "utf-8").trim();
+              if (sibCode.length > 50) {
+                const lines = sibCode.split("\n").slice(0, 60).join("\n");
+                siblingSnippets.push(`--- ${siblingPath} ---\n${lines}`);
+              }
+            }
+          }
+          if (siblingSnippets.length > 0) {
+            userMessage += `\n\nALREADY WRITTEN FILES — do NOT re-implement any component, hook, or state logic already present in these files. Import from them if needed:\n${siblingSnippets.join("\n\n")}`;
+          }
+        } else {
+          // Also inject LLM summaries for non-dep completed files (awareness, not imports)
+          const priorSummaries = Object.entries(this.fileContextSummaries)
+            .filter(([fp]) => fp !== filePath && !plannedImports.includes(fp))
+            .slice(-2);
+          if (priorSummaries.length > 0) {
+            userMessage += `\n\nOTHER COMPLETED FILES (for context):\n${priorSummaries.map(([, s]) => s).join("\n")}`;
+          }
+        }
+      }
 
       // Include QA feedback from previous retry — only on first step
       if (i === 0 && qaReason) {
@@ -1227,6 +1563,25 @@ export default function Component() {
           allowScaffold: true,
         });
         if (validation.valid) {
+          // TypeScript syntax check — only for .ts/.tsx/.jsx/.js files.
+          // Uses getSyntacticDiagnostics() so it only catches parse/syntax
+          // errors (TS1xxx), never type errors. noResolve means imports are
+          // not followed, keeping this fast and isolated.
+          const syntaxErrors = checkTypeScriptSyntax(filePath, output);
+          if (syntaxErrors.length > 0) {
+            const errorSummary = syntaxErrors.join("; ");
+            await this.log(
+              "QA",
+              `Step ${i + 1} attempt ${attempt} TS syntax: ${errorSummary}`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            lastGarbageOutput = output;
+            stepUserMessage =
+              userMessage +
+              `\n\nYour previous output has TypeScript syntax errors:\n${errorSummary}\nFix these errors and rewrite the complete file.`;
+            continue;
+          }
+
           await this.writeOutputFile(filePath, output);
           stepsCompleted++;
           await this.log(
@@ -1907,6 +2262,77 @@ export default function Component() {
   }
 
   // ─────────────────────────────────────────────
+  //  JUDGE PHASE (post-Execute gate)
+  // ─────────────────────────────────────────────
+
+  /**
+   * Inspect what Execute actually produced and set this.judgeVerdict.
+   *
+   * Checks every TypeScript/TSX/JSX file in the manifest:
+   *   - "substantial": > 150 non-whitespace chars (has real content)
+   *   - "thin": <= 150 (scaffold-only or essentially empty)
+   *   - "missing": not on disk at all
+   *
+   * Verdicts:
+   *   proceed     — majority of files are substantial → normal QA
+   *   warn        — some files are thin but majority OK → normal QA, log warning
+   *   skip_vitest — majority are thin/missing → skip vitest (would crash-loop
+   *                 against symptoms instead of the actual problem)
+   *
+   * Non-TS projects (markdown, JSON, Python) always get "proceed" since
+   * vitest doesn't apply to them anyway.
+   */
+  private async runJudgePhase() {
+    const SUBSTANTIAL = 150; // non-whitespace chars
+
+    const tsFiles = this.manifest.filter((f) =>
+      ["ts", "tsx", "jsx"].includes(
+        f.path.split(".").pop()?.toLowerCase() ?? "",
+      ),
+    );
+
+    if (tsFiles.length === 0) {
+      this.judgeVerdict = "proceed";
+      return;
+    }
+
+    let substantial = 0;
+    let thin = 0;
+    let missing = 0;
+
+    for (const file of tsFiles) {
+      const content = this.getCurrentFileContent(file.path);
+      if (!content) {
+        missing++;
+        continue;
+      }
+      const nonWs = content.replace(/\s/g, "").length;
+      if (nonWs >= SUBSTANTIAL) substantial++;
+      else thin++;
+    }
+
+    const total = tsFiles.length;
+    const summary = `${substantial}/${total} files substantial, ${thin} thin, ${missing} missing`;
+
+    if (missing + thin > substantial) {
+      await this.log(
+        "JUDGE",
+        `${summary} → SKIP_VITEST: most output is insufficient; skipping test runner to avoid crash-loop`,
+      );
+      this.judgeVerdict = "skip_vitest";
+    } else if (thin > 0 || missing > 0) {
+      await this.log(
+        "JUDGE",
+        `${summary} → WARN: some files are thin; QA may partially fail`,
+      );
+      this.judgeVerdict = "warn";
+    } else {
+      await this.log("JUDGE", `${summary} → PROCEED`);
+      this.judgeVerdict = "proceed";
+    }
+  }
+
+  // ─────────────────────────────────────────────
   //  FULL QA PIPELINE (reusable: called after execute AND feedback)
   // ─────────────────────────────────────────────
 
@@ -1922,6 +2348,16 @@ export default function Component() {
    * Small models hallucinate phantom issues and introduce bugs while "fixing" them.
    */
   private async runFullQA() {
+    if (this.judgeVerdict === "skip_vitest") {
+      await this.log(
+        "QA",
+        "Judge: skipping vitest (insufficient output) — running holistic + consistency only",
+      );
+      await this.runHolisticReviewPass();
+      await this.runConsistencyCheck();
+      return;
+    }
+
     const testsAllPassed = await this.runTestQA();
     await this.runHolisticReviewPass();
 
@@ -1964,18 +2400,57 @@ export default function Component() {
 
     await this.log("TDD", `Generating tests for ${file}...`);
 
-    const result = await runTestWriter(
+    // Read the already-written code file to extract the real export name.
+    // Tests are now generated after Execute, so the file exists.
+    const outDir = this.outputDir();
+    let exportName: string | undefined;
+    const codePath = path.join(outDir, file);
+    let fileContent: string | undefined;
+    if (fs.existsSync(codePath)) {
+      fileContent = fs.readFileSync(codePath, "utf-8");
+      // Match: export default function FooBar or export default class FooBar
+      const match = fileContent.match(
+        /export\s+default\s+(?:function|class)\s+(\w+)/,
+      );
+      if (match) exportName = match[1];
+    }
+
+    let result = await runTestWriter(
       this.model,
       this.projectName,
       this.projectDescription,
       requirements,
       file,
+      exportName,
+      // TDD runs before Execute — file is only a scaffold placeholder at this point.
+      // Passing fileContent causes the model to copy the scaffold into the test output.
+      undefined,
     );
+
+    if (!result.tests) {
+      // Retry once with a slightly different prompt framing before giving up.
+      await this.log(
+        "TDD",
+        "Test writer produced no tests on first attempt — retrying...",
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+      result = await runTestWriter(
+        this.model,
+        this.projectName,
+        this.projectDescription,
+        requirements,
+        file,
+        exportName,
+        undefined,
+      );
+    }
 
     if (!result.tests) {
       await this.log(
         "TDD",
-        "Test writer failed to produce tests — skipping TDD",
+        "Test writer failed to produce tests after retry — skipping TDD",
         undefined,
         result.prompt,
         result.raw,
@@ -1989,11 +2464,21 @@ export default function Component() {
       await this.log("TDD", `Auto-repaired test file: ${fixes.join(", ")}`);
     }
 
-    // Fix the import to use the correct component name
-    // The test-writer might import "Component" but the actual export could be "PixelArtEditor" etc.
-    // We'll fix this at test-run time if needed since the component doesn't exist yet.
+    // Reject test files that contain no actual tests.
+    // The model sometimes generates a full component implementation instead of tests.
+    // If there's no describe() or it() call, the file is useless as a test file.
+    const hasTests = /\bit\s*\(|\bdescribe\s*\(|\btest\s*\(/.test(repaired);
+    if (!hasTests) {
+      await this.log(
+        "TDD",
+        `Generated ${testFile} contains no tests (model wrote implementation code) — discarding`,
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+      return;
+    }
 
-    const outDir = this.outputDir();
     const testPath = path.join(outDir, testFile);
     // Ensure the target directory exists (handles nested manifest paths)
     fs.mkdirSync(path.dirname(testPath), { recursive: true });
@@ -2089,6 +2574,14 @@ export default function Component() {
       "TDD",
       `Initial results: ${testResult.passed} passed, ${testResult.failed} failed, ${testResult.total} total`,
     );
+
+    if (testResult.total === 0 && !testResult.crashed) {
+      await this.log(
+        "TDD",
+        "0 tests ran — test file has import/parse errors. Falling back to LLM QA.",
+      );
+      return false;
+    }
 
     if (testResult.failed === 0) {
       await this.log("TDD", "All tests passing!");
@@ -2822,6 +3315,10 @@ output: |
     );
 
     const previousFixes: string[] = [];
+    // Track (file+problem_prefix) to detect repeated identical issues.
+    // If the same issue recurs in the same file after a fix attempt, skip it
+    // rather than looping forever on the same broken code.
+    const issueAttemptCount = new Map<string, number>();
     let round = 0;
 
     while (round < Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
@@ -2863,6 +3360,20 @@ output: |
       }
 
       const { file: targetFile, problem, fix } = result.issue;
+      // Deduplication: if the same file+problem has already been attempted twice
+      // this session, the model is stuck in a loop — skip it.
+      const issueKey = `${targetFile}::${problem.slice(0, 80)}`;
+      const priorAttempts = issueAttemptCount.get(issueKey) ?? 0;
+      if (priorAttempts >= 2) {
+        await this.log(
+          "QA",
+          `Round ${round}: Skipping repeated issue in ${targetFile} (already tried ${priorAttempts}x): ${problem.slice(0, 100)}`,
+        );
+        previousFixes.push(`${problem} (skipped — repeated)`);
+        continue;
+      }
+      issueAttemptCount.set(issueKey, priorAttempts + 1);
+
       await this.log(
         "QA",
         `Round ${round} found: [${targetFile}] ${problem}`,
@@ -2887,6 +3398,69 @@ output: |
         continue;
       }
 
+      // ── Attempt 1: Surgical edit (touch only the affected lines) ──
+      let fixed = false;
+      const lineHint = result.issue.line;
+      const lineCount = existingContent.split("\n").length;
+      const targetLine = lineHint ?? Math.ceil(lineCount / 2);
+      const windowSize = Math.min(35, Math.ceil(lineCount / 2));
+      const { section } = extractFileWindow(
+        existingContent,
+        targetLine,
+        windowSize,
+      );
+
+      const editResult = await runEditor(
+        this.model,
+        resolvedFile,
+        `Problem: ${problem}\nFix: ${fix}`,
+        section,
+      );
+
+      if (editResult.block) {
+        const edited = applyEdit(
+          existingContent,
+          editResult.block.startLine,
+          editResult.block.endLine,
+          editResult.block.replace,
+        );
+        const { repaired: editRepaired } = autoRepairOutput(
+          edited,
+          resolvedFile,
+        );
+        const editValidation = validateOutput(editRepaired, resolvedFile);
+        const editExt = (resolvedFile.split(".").pop() ?? "").toLowerCase();
+        const editSyntaxErrors =
+          editValidation.valid && ["ts", "tsx", "js", "jsx"].includes(editExt)
+            ? checkTypeScriptSyntax(resolvedFile, editRepaired)
+            : [];
+        if (editValidation.valid && editSyntaxErrors.length === 0) {
+          await this.writeOutputFile(resolvedFile, editRepaired);
+          await this.log(
+            "QA",
+            `Round ${round}: Surgical fix in ${resolvedFile} lines ${editResult.block.startLine}–${editResult.block.endLine} (${editResult.tokens} tokens)`,
+            undefined,
+            editResult.prompt,
+            editResult.raw,
+          );
+          previousFixes.push(
+            `${problem} → surgically fixed in ${resolvedFile}`,
+          );
+          fixed = true;
+        } else {
+          const reason = !editValidation.valid
+            ? editValidation.reason!
+            : `${editSyntaxErrors[0]}`;
+          await this.log(
+            "QA",
+            `Round ${round}: Surgical edit validation failed (${reason}) — falling back to full rewrite`,
+          );
+        }
+      }
+
+      if (fixed) continue;
+
+      // ── Attempt 2: Full-file rewrite fallback ──
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
       userMessage += `Current ${resolvedFile}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
       userMessage += `QA found this issue:\nProblem: ${problem}\nFix: ${fix}\n\n`;
@@ -2904,7 +3478,12 @@ output: |
         const output = devResult.block.output;
         const { repaired } = autoRepairOutput(output, resolvedFile);
         const validation = validateOutput(repaired, resolvedFile);
-        if (validation.valid) {
+        const rewriteExt = (resolvedFile.split(".").pop() ?? "").toLowerCase();
+        const rewriteSyntaxErrors =
+          validation.valid && ["ts", "tsx", "js", "jsx"].includes(rewriteExt)
+            ? checkTypeScriptSyntax(resolvedFile, repaired)
+            : [];
+        if (validation.valid && rewriteSyntaxErrors.length === 0) {
           await this.writeOutputFile(resolvedFile, repaired);
           await this.log(
             "QA",
@@ -2915,9 +3494,12 @@ output: |
           );
           previousFixes.push(`${problem} → fixed in ${resolvedFile}`);
         } else {
+          const reason = !validation.valid
+            ? validation.reason!
+            : `TS syntax: ${rewriteSyntaxErrors[0]}`;
           await this.log(
             "QA",
-            `Round ${round}: Fix for ${resolvedFile} failed validation: ${validation.reason} — keeping original`,
+            `Round ${round}: Fix for ${resolvedFile} failed validation: ${reason} — keeping original`,
             undefined,
             devResult.prompt,
             devResult.raw,
@@ -2964,142 +3546,627 @@ output: |
       return;
     }
 
-    // Find the primary file to apply feedback to
-    const primaryFile = this.manifest[0]?.path || "output.txt";
-    const primaryPath = path.join(outDir, primaryFile);
-    if (!fs.existsSync(primaryPath)) {
-      await this.log(
-        "FBK",
-        `No ${primaryFile} found — nothing to modify.`,
-      );
-      return;
-    }
-
-    const original = fs.readFileSync(primaryPath, "utf-8");
-    if (original.trim().length === 0) {
-      await this.log(
-        "FBK",
-        `${primaryFile} is empty — run Execute first.`,
-      );
+    if (this.manifest.length === 0) {
+      await this.log("FBK", "No file manifest — nothing to modify.");
       return;
     }
 
     await this.log(
       "FBK",
-      `Processing feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
+      `Feedback: "${feedback.slice(0, 200)}${feedback.length > 200 ? "…" : ""}"`,
     );
 
-    // Backup before modifying
-    const backupPath = primaryPath + ".bak";
-    fs.writeFileSync(backupPath, original, "utf-8");
-    await this.log("FBK", `Backed up ${primaryFile}`);
+    // ── Step 1: PLAN — decide which files need changing and what to change ──
+    await this.log("FBK", "Planning changes...");
 
-    // Build a context-appropriate system prompt based on file type
-    const ext = primaryFile.split(".").pop()?.toLowerCase() || "";
-    const fileTypeRules = getFileTypeRules(primaryFile);
+    // Give the planner a brief preview of each file so it can locate features
+    // like "signup screen" by content, not just description.
+    const PREVIEW_LINES = 25;
+    const plannerFiles = this.manifest.map((f) => {
+      const full = path.join(outDir, f.path);
+      let preview: string | undefined;
+      if (fs.existsSync(full)) {
+        const content = fs.readFileSync(full, "utf-8");
+        const lines = content.split("\n").slice(0, PREVIEW_LINES);
+        preview = lines.map((l) => `    ${l}`).join("\n");
+      }
+      return { path: f.path, description: f.description, preview };
+    });
 
-    const FBK_SYSTEM_PROMPT = `Fix the issues in this file. Do NOT rewrite or replace it unless necessary.
-Keep same structure and features. Only change what's requested.
-${fileTypeRules}
-Output ONLY the file content. No comments in code. No explanations before or after.
+    const plan = await runFeedbackPlanner(
+      this.model,
+      `${this.projectName}: ${this.projectDescription}`,
+      feedback,
+      plannerFiles,
+    );
 
-Reply:
->>RESULT
-status: DONE
-filePath: ${primaryFile}
-output: |
-  (full corrected file)
->>END`;
+    if (plan.edits.length === 0) {
+      await this.log(
+        "FBK",
+        "Planner found no files to change",
+        undefined,
+        plan.prompt,
+        plan.raw,
+      );
+      return;
+    }
+
+    // Resolve each planned file path against the manifest (handles partial names)
+    const resolvedEdits: { filePath: string; instruction: string }[] = [];
+    for (const edit of plan.edits) {
+      const resolved =
+        this.resolveTargetFile(edit.filePath) ||
+        this.resolveFilePath(edit.filePath, edit.instruction);
+      if (!resolved) {
+        await this.log("FBK", `Skipping unknown file: ${edit.filePath}`);
+        continue;
+      }
+      resolvedEdits.push({ filePath: resolved, instruction: edit.instruction });
+    }
+
+    if (resolvedEdits.length === 0) {
+      await this.log("FBK", "No valid files to edit after resolution");
+      return;
+    }
+
+    await this.log(
+      "FBK",
+      `Plan: ${resolvedEdits.length} file(s) to edit (${plan.tokens} tokens)`,
+      undefined,
+      plan.prompt,
+      plan.raw,
+    );
+    for (const e of resolvedEdits) {
+      await this.log("FBK", `  • ${e.filePath}: ${e.instruction}`);
+    }
+
+    // Start a fresh ledger for this feedback pass.
+    await initLedger(this.projectId, feedback);
+
+    // ── Step 2: APPLY — surgical edit first, whole-file rewrite as fallback ──
+    let appliedCount = 0;
+    for (const edit of resolvedEdits) {
+      if (this.aborted) break;
+
+      const fullPath = path.join(outDir, edit.filePath);
+      if (!fs.existsSync(fullPath)) {
+        await this.log("FBK", `Missing file: ${edit.filePath} — skipping`);
+        continue;
+      }
+
+      const original = fs.readFileSync(fullPath, "utf-8");
+      if (original.trim().length === 0) {
+        await this.log("FBK", `${edit.filePath} is empty — skipping`);
+        continue;
+      }
+
+      // Backup before modifying
+      const backupPath = fullPath + ".bak";
+      fs.writeFileSync(backupPath, original, "utf-8");
+
+      await this.log("FBK", `Editing ${edit.filePath}: ${edit.instruction}`);
+
+      const surgicalOk = await this.trySurgicalFeedbackEdit(
+        edit.filePath,
+        edit.instruction,
+        original,
+        fullPath,
+      );
+
+      if (surgicalOk) {
+        appliedCount++;
+      } else {
+        // Fall back to whole-file rewrite via the developer agent.
+        const wholeFileOk = await this.tryWholeFileFeedbackEdit(
+          edit.filePath,
+          edit.instruction,
+          feedback,
+          fullPath,
+          original,
+        );
+        if (wholeFileOk) {
+          appliedCount++;
+        } else {
+          fs.writeFileSync(fullPath, original, "utf-8");
+          await this.log(
+            "FBK",
+            `${edit.filePath}: all attempts failed — restored original`,
+          );
+        }
+      }
+
+      if (fs.existsSync(backupPath)) {
+        fs.unlinkSync(backupPath);
+      }
+    }
+
+    // ── Step 3: PROPAGATE — cross-file rename consistency ──
+    // If the instructions implied a rename (absent old + present new),
+    // scan every manifest file for residual occurrences of the old name and
+    // run a follow-up surgical edit.
+    const editedPaths = new Set(resolvedEdits.map((e) => e.filePath));
+    const renamePairs: { from: string; to: string }[] = [];
+    for (const edit of resolvedEdits) {
+      const conds = derivePostconditions(edit.instruction);
+      const absent = conds.find((c) => c.kind === "absent");
+      const present = conds.find((c) => c.kind === "present");
+      if (absent && present) {
+        renamePairs.push({ from: absent.needle, to: present.needle });
+      }
+    }
+
+    if (renamePairs.length > 0) {
+      for (const file of this.manifest) {
+        if (this.aborted) break;
+        const fullPath = path.join(outDir, file.path);
+        if (!fs.existsSync(fullPath)) continue;
+        const content = fs.readFileSync(fullPath, "utf-8");
+        const masked = content.toLowerCase();
+        for (const pair of renamePairs) {
+          if (
+            masked.includes(pair.from.toLowerCase()) &&
+            !masked.includes(pair.to.toLowerCase()) &&
+            !editedPaths.has(file.path)
+          ) {
+            await this.log(
+              "FBK",
+              `Propagating rename "${pair.from}"→"${pair.to}" into ${file.path}`,
+            );
+            const propInstruction = `Rename ${pair.from} to ${pair.to}`;
+            const backupPath = fullPath + ".bak";
+            fs.writeFileSync(backupPath, content, "utf-8");
+            const ok = await this.trySurgicalFeedbackEdit(
+              file.path,
+              propInstruction,
+              content,
+              fullPath,
+            );
+            if (ok) {
+              appliedCount++;
+              editedPaths.add(file.path);
+            } else {
+              fs.writeFileSync(fullPath, content, "utf-8");
+            }
+            if (fs.existsSync(backupPath)) fs.unlinkSync(backupPath);
+            break; // one pair per file is enough
+          }
+        }
+      }
+    }
+
+    await finalizeLedger(this.projectId);
+
+    await this.log(
+      "FBK",
+      `Feedback pass complete — ${appliedCount}/${resolvedEdits.length} file(s) updated`,
+    );
+  }
+
+  /**
+   * Surgical feedback edit: locate a window, ask the editor for a small replace,
+   * verify postconditions, and apply. Returns true if applied.
+   */
+  private async trySurgicalFeedbackEdit(
+    filePath: string,
+    instruction: string,
+    original: string,
+    fullPath: string,
+  ): Promise<boolean> {
+    const candidates: LocateCandidate[] = locateWindows(original, instruction);
+    if (candidates.length === 0) {
+      await this.log(
+        "FBK",
+        `${filePath}: locator found no window — falling back to whole-file rewrite`,
+      );
+      return false;
+    }
+
+    const postconds = derivePostconditions(instruction);
+    let currentContent = original;
+    let lastEvidence: string | undefined;
+    let candidateIdx = 0;
+    let candidate = candidates[candidateIdx];
+
+    const ledgerId = await appendLedgerItem(this.projectId, {
+      kind: "edit",
+      status: "active",
+      file: filePath,
+      instruction,
+      window: { startLine: candidate.startLine, endLine: candidate.endLine },
+    });
+
+    await this.log(
+      "FBK",
+      `${filePath}: locator chose lines ${candidate.startLine}-${candidate.endLine} (${candidate.why})`,
+    );
+
+    const MAX_ATTEMPTS = 3;
+    for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+      if (this.aborted) {
+        await updateLedgerItem(this.projectId, ledgerId, {
+          status: "failed",
+          evidence: "aborted",
+        });
+        return false;
+      }
+
+      // Drift check: window content must still hash to what the locator saw.
+      const liveSnippet = this.sliceLines(
+        currentContent,
+        candidate.startLine,
+        candidate.endLine,
+      );
+      const liveHash = hashString(liveSnippet);
+      if (liveHash !== candidate.hash && attempt === 1) {
+        // First attempt only — re-locate from current content.
+        const refreshed = locateWindows(currentContent, instruction);
+        if (refreshed.length === 0) {
+          await this.log(
+            "FBK",
+            `${filePath}: window drifted, re-locate failed`,
+          );
+          await updateLedgerItem(this.projectId, ledgerId, {
+            status: "failed",
+            evidence: "snippet hash drift, re-locate empty",
+          });
+          return false;
+        }
+        candidate = refreshed[0];
+        await this.log(
+          "FBK",
+          `${filePath}: re-located to ${candidate.startLine}-${candidate.endLine}`,
+        );
+      }
+
+      const windowSnippet = numberLines(
+        currentContent,
+        candidate.startLine,
+        candidate.endLine,
+      );
+
+      const result = await runFeedbackEditor(
+        this.model,
+        filePath,
+        instruction,
+        windowSnippet,
+        candidate.startLine,
+        candidate.endLine,
+        lastEvidence,
+      );
+
+      await updateLedgerItem(this.projectId, ledgerId, { attempts: attempt });
+
+      if (result.needsWiderWindow) {
+        const start = result.needsWiderWindow.suggestedStartLine ?? 1;
+        const totalLines = currentContent.split("\n").length;
+        const end = Math.min(
+          totalLines,
+          result.needsWiderWindow.suggestedEndLine ?? candidate.endLine + 40,
+        );
+        candidate = {
+          ...candidate,
+          startLine: Math.max(1, start),
+          endLine: end,
+          hash: hashString(this.sliceLines(currentContent, start, end)),
+          why: `widened: ${result.needsWiderWindow.reason}`,
+        };
+        await this.log(
+          "FBK",
+          `${filePath}: editor requested wider window ${candidate.startLine}-${candidate.endLine} (${result.needsWiderWindow.reason})`,
+          undefined,
+          result.prompt,
+          result.raw,
+        );
+        continue;
+      }
+
+      if (!result.edit) {
+        lastEvidence = `Editor produced no parseable EDIT block. Reply with the exact >>EDIT...>>END schema.`;
+        await this.log(
+          "FBK",
+          `${filePath} attempt ${attempt}: parse failure`,
+          undefined,
+          result.prompt,
+          result.raw,
+        );
+        continue;
+      }
+
+      const edit = result.edit;
+      // Reject edits outside the allowed window.
+      if (
+        edit.startLine < candidate.startLine ||
+        edit.endLine > candidate.endLine ||
+        edit.startLine > edit.endLine
+      ) {
+        lastEvidence = `Your edit range ${edit.startLine}-${edit.endLine} is outside the allowed window ${candidate.startLine}-${candidate.endLine}. Stay inside it.`;
+        await this.log(
+          "FBK",
+          `${filePath} attempt ${attempt}: out-of-window edit ${edit.startLine}-${edit.endLine}`,
+          undefined,
+          result.prompt,
+          result.raw,
+        );
+        continue;
+      }
+
+      const cleanedReplace = stripLineNumberPrefixes(edit.replace);
+      const proposed = applyEdit(
+        currentContent,
+        edit.startLine,
+        edit.endLine,
+        cleanedReplace,
+      );
+
+      if (proposed === currentContent) {
+        lastEvidence = `Your edit did not change the file. Actually modify lines ${edit.startLine}-${edit.endLine}.`;
+        continue;
+      }
+
+      const validation = validateOutput(proposed, filePath);
+      if (!validation.valid) {
+        lastEvidence = `Validation failed: ${validation.reason}`;
+        await this.log(
+          "FBK",
+          `${filePath} attempt ${attempt}: validation failed — ${validation.reason}`,
+          undefined,
+          result.prompt,
+          result.raw,
+        );
+        continue;
+      }
+
+      const failures = checkPostconditions(proposed, postconds, filePath);
+      if (failures.length > 0) {
+        lastEvidence = formatFailureMessage(failures);
+        await this.log(
+          "FBK",
+          `${filePath} attempt ${attempt}: postconditions failed (${failures.length})`,
+          undefined,
+          result.prompt,
+          result.raw,
+        );
+        // Try a different candidate window next time.
+        if (candidateIdx + 1 < candidates.length) {
+          candidateIdx++;
+          candidate = candidates[candidateIdx];
+          await this.log(
+            "FBK",
+            `${filePath}: trying next candidate ${candidate.startLine}-${candidate.endLine} (${candidate.why})`,
+          );
+        }
+        continue;
+      }
+
+      // Post-edit syntax check (TS/TSX/JS/JSX only). Treat errors as evidence
+      // and retry; never write a syntactically broken file.
+      const ext = (filePath.split(".").pop() ?? "").toLowerCase();
+      if (["ts", "tsx", "js", "jsx"].includes(ext)) {
+        const syntaxErrors = checkTypeScriptSyntax(filePath, proposed);
+        if (syntaxErrors.length > 0) {
+          lastEvidence = `Your edit introduced syntax errors:\n${syntaxErrors.slice(0, 5).join("\n")}\nFix them while keeping the instruction intact.`;
+          await this.log(
+            "FBK",
+            `${filePath} attempt ${attempt}: ${syntaxErrors.length} syntax error(s) — retrying`,
+            undefined,
+            result.prompt,
+            result.raw,
+          );
+          continue;
+        }
+      }
+
+      // Capture before/after snippet for the ledger so the UI can show
+      // a tiny diff of what changed.
+      const before = this.sliceLines(
+        currentContent,
+        edit.startLine,
+        edit.endLine,
+      );
+      const after = cleanedReplace;
+
+      await this.writeOutputFile(filePath, proposed);
+      currentContent = proposed;
+      await this.log(
+        "FBK",
+        `${filePath}: surgical edit applied (lines ${edit.startLine}-${edit.endLine}, ${result.tokens} tokens)`,
+        undefined,
+        result.prompt,
+        result.raw,
+      );
+      await updateLedgerItem(this.projectId, ledgerId, {
+        status: "done",
+        window: { startLine: edit.startLine, endLine: edit.endLine },
+        before,
+        after,
+      });
+      return true;
+    }
+
+    await updateLedgerItem(this.projectId, ledgerId, {
+      status: "failed",
+      evidence: lastEvidence ?? "max attempts reached",
+    });
+    return false;
+  }
+
+  /** Extract a 1-indexed inclusive line range from content. */
+  private sliceLines(
+    content: string,
+    startLine: number,
+    endLine: number,
+  ): string {
+    const lines = content.split("\n");
+    const s = Math.max(1, startLine);
+    const e = Math.min(lines.length, endLine);
+    return lines.slice(s - 1, e).join("\n");
+  }
+
+  /**
+   * Fallback: whole-file rewrite via the developer agent. Used when surgical
+   * editing fails. Preserves the original truncation-marker and identical-output
+   * guards from the prior implementation.
+   */
+  private async tryWholeFileFeedbackEdit(
+    filePathRel: string,
+    instructionIn: string,
+    feedback: string,
+    fullPath: string,
+    original: string,
+  ): Promise<boolean> {
+    const ledgerId = await appendLedgerItem(this.projectId, {
+      kind: "rewrite",
+      status: "active",
+      file: filePathRel,
+      instruction: instructionIn,
+    });
 
     let currentContent = original;
-    let applied = false;
+    let instruction = instructionIn;
 
-    // Self-healing retry loop: apply → validate → feed error back → retry
     for (
       let attempt = 1;
       attempt <= Pipeline.MAX_SELF_HEAL_ATTEMPTS;
       attempt++
     ) {
+      await updateLedgerItem(this.projectId, ledgerId, { attempts: attempt });
       await this.log(
         "FBK",
-        `Attempt ${attempt}/${Pipeline.MAX_SELF_HEAL_ATTEMPTS}...`,
+        `${filePathRel} whole-file attempt ${attempt}/${Pipeline.MAX_SELF_HEAL_ATTEMPTS}`,
       );
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `EXISTING ${primaryFile} (edit this, do NOT replace):\n${this.truncateForPrompt(currentContent, 100)}\n\n`;
-      userMessage += `USER FBK: "${feedback}"\n\n`;
-      userMessage += `Output the COMPLETE corrected ${primaryFile}.`;
-
+      userMessage += `User feedback: "${feedback}"\n\n`;
+      userMessage += `Specifically in ${filePathRel}: ${instruction}\n\n`;
+      userMessage += `Current ${filePathRel} (FULL FILE — do not truncate, output every line back):\n${currentContent}\n\n`;
+      userMessage += `Apply the change above. Output the COMPLETE updated ${filePathRel} verbatim — every line that should remain, plus your changes. Do not abbreviate. Do not use "/* ... */" or "// rest unchanged". Do not change anything outside the requested edit.`;
       userMessage = this.withCustomInstructions(userMessage);
 
-      const result = await callOllamaFn(
+      const devResult = await runDeveloper(
         this.model,
-        "feedback",
-        FBK_SYSTEM_PROMPT,
         userMessage,
+        filePathRel,
       );
 
-      const parsed = parseTTM(result.text);
-      const block =
-        parsed && "output" in parsed ? (parsed as { output: string }) : null;
-
-      if (!block) {
+      if (!devResult.block) {
         await this.log(
           "FBK",
-          `Attempt ${attempt}: parse failure — retrying`,
+          `${filePathRel}: parse failure — retrying`,
           undefined,
-          result.prompt,
-          result.text,
+          devResult.prompt,
+          devResult.raw,
         );
         continue;
       }
 
-      const { repaired, fixes } = autoRepairOutput(block.output, primaryFile);
+      const { repaired, fixes } = autoRepairOutput(
+        devResult.block.output,
+        filePathRel,
+      );
       if (fixes.length > 0) {
         await this.log("FBK", `Auto-repaired: ${fixes.join(", ")}`);
       }
 
-      const validation = validateOutput(repaired, primaryFile);
-      if (validation.valid) {
-        await this.writeOutputFile(primaryFile, repaired);
-        currentContent = repaired;
-        applied = true;
+      const validation = validateOutput(repaired, filePathRel);
+      if (!validation.valid) {
         await this.log(
           "FBK",
-          `Applied feedback (${result.tokens} tokens)`,
+          `${filePathRel} attempt ${attempt} failed: ${validation.reason}`,
           undefined,
-          result.prompt,
-          result.text,
+          devResult.prompt,
+          devResult.raw,
         );
-        break;
+        instruction = `${instructionIn}\n\nYour previous fix failed validation: ${validation.reason}. Fix this too.`;
+        continue;
       }
 
-      // Validation failed — feed the error back for the next attempt
+      if (repaired === original) {
+        await this.log(
+          "FBK",
+          `${filePathRel}: output identical to original — retrying with stronger instruction`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        instruction = `${instructionIn}\n\nIMPORTANT: Your previous output was IDENTICAL to the input. You MUST actually change the file.`;
+        continue;
+      }
+
+      const truncationMarkers = [
+        /\/\*\s*\.\.\.\s*\*\//,
+        /\/\/\s*\.\.\.\s*(rest|remaining|unchanged|same|other)/i,
+        /\/\/\s*\(unchanged\)/i,
+        /#\s*\.\.\.\s*(rest|remaining|unchanged)/i,
+        /\{\/\*\s*\.\.\.\s*\*\/\}/,
+      ];
+      const hasTruncation = truncationMarkers.some((re) => re.test(repaired));
+      const origLines = original.split("\n").length;
+      const newLines = repaired.split("\n").length;
+      const shrunkenTooMuch = origLines >= 20 && newLines < origLines * 0.6;
+
+      if (hasTruncation || shrunkenTooMuch) {
+        await this.log(
+          "FBK",
+          `${filePathRel}: output appears truncated (${newLines}/${origLines} lines${hasTruncation ? ", abbreviation marker" : ""}) — retrying`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        instruction = `${instructionIn}\n\nIMPORTANT: Your previous output was TRUNCATED (you used "..." or omitted code). You MUST output every single line of the file, verbatim, including all imports, all functions, all JSX. Do not use abbreviation markers.`;
+        continue;
+      }
+
+      // Verify postconditions on the full rewrite too.
+      const postconds = derivePostconditions(instructionIn);
+      const failures = checkPostconditions(repaired, postconds, filePathRel);
+      if (failures.length > 0) {
+        await this.log(
+          "FBK",
+          `${filePathRel}: postconditions failed (${failures.length}) — retrying`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        instruction = `${instructionIn}\n\n${formatFailureMessage(failures)}`;
+        continue;
+      }
+
+      // Post-edit syntax check (TS/TSX/JS/JSX only).
+      const ext = (filePathRel.split(".").pop() ?? "").toLowerCase();
+      if (["ts", "tsx", "js", "jsx"].includes(ext)) {
+        const syntaxErrors = checkTypeScriptSyntax(filePathRel, repaired);
+        if (syntaxErrors.length > 0) {
+          await this.log(
+            "FBK",
+            `${filePathRel}: ${syntaxErrors.length} syntax error(s) — retrying`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+          instruction = `${instructionIn}\n\nYour previous output had syntax errors:\n${syntaxErrors.slice(0, 5).join("\n")}\nFix them.`;
+          continue;
+        }
+      }
+
+      await this.writeOutputFile(filePathRel, repaired);
+      currentContent = repaired;
       await this.log(
         "FBK",
-        `Attempt ${attempt} failed: ${validation.reason}`,
+        `${filePathRel}: whole-file rewrite applied (${devResult.tokens} tokens)`,
         undefined,
-        result.prompt,
-        result.text,
+        devResult.prompt,
+        devResult.raw,
       );
-      feedback = `${feedback}\n\nYour previous fix failed validation: ${validation.reason}. Fix this error too.`;
+      await updateLedgerItem(this.projectId, ledgerId, {
+        status: "done",
+        before: original.slice(0, 1200),
+        after: repaired.slice(0, 1200),
+      });
+      return true;
     }
 
-    if (!applied) {
-      // All attempts failed — restore backup
-      fs.writeFileSync(primaryPath, original, "utf-8");
-      await this.log(
-        "FBK",
-        "All attempts failed — restored original file",
-      );
-    }
-
-    // Clean up backup
-    if (fs.existsSync(backupPath)) {
-      fs.unlinkSync(backupPath);
-    }
-
-    await this.log("FBK", "Feedback pass complete");
+    await updateLedgerItem(this.projectId, ledgerId, { status: "failed" });
+    return false;
   }
 
   /** Map an LLM-returned filename to the closest manifest file */
@@ -3141,122 +4208,86 @@ output: |
   // ─────────────────────────────────────────────
 
   private async runImprovementPass() {
+    // Check each code file for real syntax/rendering errors using the TS
+    // compiler — no LLM guessing. Only call the developer when there are
+    // actual errors to fix.
+    const CODE_EXTS = new Set(["tsx", "jsx", "ts", "js"]);
     const outDir = this.outputDir();
     if (!fs.existsSync(outDir)) return;
 
-    const projectFiles: { path: string; content: string }[] = [];
     for (const file of this.manifest) {
-      const fullPath = path.join(outDir, file.path);
-      if (fs.existsSync(fullPath)) {
-        const content = fs.readFileSync(fullPath, "utf-8");
-        if (content.trim().length > 20) {
-          projectFiles.push({ path: file.path, content });
-        }
-      }
-    }
-
-    if (projectFiles.length === 0) return;
-
-    const project = await db.query.projects.findFirst({
-      where: eq(projects.id, this.projectId),
-    });
-    if (!project) return;
-
-    const userRequest = `${project.name}: ${project.description}`;
-
-    await this.log("IMP", "Reviewing component for bugs...");
-
-    const result = await runImprover(this.model, userRequest, projectFiles);
-
-    if (result.fixes.length === 0) {
-      await this.log(
-        "IMP",
-        `No issues found (${result.tokens} tokens, ${result.durationMs}ms)`,
-        undefined,
-        result.prompt,
-        result.raw,
-      );
-      return;
-    }
-
-    await this.log(
-      "IMP",
-      `Found ${result.fixes.length} issue(s) to fix (${result.tokens} tokens, ${result.durationMs}ms)`,
-      undefined,
-      result.prompt,
-      result.raw,
-    );
-
-    // Group fixes by file for single rewrite per file
-    const fixesByFile: Record<string, string[]> = {};
-    for (const fix of result.fixes) {
-      const fp = this.resolveFilePath(fix.filePath, fix.description);
-      if (!fixesByFile[fp]) fixesByFile[fp] = [];
-      fixesByFile[fp].push(fix.description);
-    }
-
-    for (const filePath of this.getFileOrder()) {
       if (this.aborted) break;
-      const fixDescriptions = fixesByFile[filePath];
-      if (!fixDescriptions || fixDescriptions.length === 0) continue;
+      const ext = file.path.split(".").pop()?.toLowerCase() || "";
+      if (!CODE_EXTS.has(ext)) continue;
 
-      const fixList = fixDescriptions
-        .map((d, i) => `${i + 1}. ${d}`)
-        .join("\n");
+      const fullPath = path.join(outDir, file.path);
+      if (!fs.existsSync(fullPath)) continue;
+
+      const content = fs.readFileSync(fullPath, "utf-8");
+      if (content.trim().length < 20) continue;
+
+      const errors = checkTypeScriptSyntax(file.path, content);
+      if (errors.length === 0) continue;
+
+      const errorList = errors.join("\n");
       await this.log(
         "IMP",
-        `Fixing ${filePath}: ${fixDescriptions.length} issue(s)`,
+        `${file.path}: ${errors.length} syntax error(s) — fixing`,
       );
+      await this.log("IMP", errorList);
 
-      const outputPath = path.join(outDir, filePath);
-      const existingContent = fs.existsSync(outputPath)
-        ? fs.readFileSync(outputPath, "utf-8")
-        : null;
-
-      let userMessage = `Project: ${this.projectName}\n\n`;
-      if (existingContent) {
-        userMessage += `Current ${filePath}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
-      }
-      userMessage += `Fix these bugs and rewrite the COMPLETE ${filePath} file:\n${fixList}`;
-
+      const truncated = this.truncateForPrompt(content, 100);
+      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+      userMessage += `Current ${file.path}:\n${truncated}\n\n`;
+      userMessage += `Fix these syntax errors and output the COMPLETE ${file.path}:\n${errorList}`;
       userMessage = this.withCustomInstructions(userMessage);
 
-      const devResult = await runDeveloper(this.model, userMessage, filePath);
+      const devResult = await runDeveloper(this.model, userMessage, file.path);
+      if (!devResult.block) {
+        await this.log(
+          "IMP",
+          `${file.path}: parse failure — skipping`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        continue;
+      }
 
-      if (devResult.block) {
-        const output = devResult.block.output;
-        const { repaired } = autoRepairOutput(output, filePath);
-        const validation = validateOutput(repaired, filePath);
-        if (validation.valid) {
-          await this.writeOutputFile(filePath, repaired);
-          await this.log(
-            "IMP",
-            `Fixed ${filePath} (${devResult.tokens} tokens)`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-        } else {
-          await this.log(
-            "IMP",
-            `Fix for ${filePath} failed validation: ${validation.reason} — keeping original`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-        }
+      const { repaired } = autoRepairOutput(devResult.block.output, file.path);
+      const validation = validateOutput(repaired, file.path);
+      if (!validation.valid) {
+        await this.log(
+          "IMP",
+          `${file.path}: fix failed validation (${validation.reason}) — keeping original`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
+        continue;
+      }
+
+      // Only write if the errors are actually gone
+      const remaining = checkTypeScriptSyntax(file.path, repaired);
+      if (remaining.length < errors.length) {
+        await this.writeOutputFile(file.path, repaired);
+        await this.log(
+          "IMP",
+          `${file.path}: fixed (${errors.length - remaining.length} error(s) resolved)`,
+          undefined,
+          devResult.prompt,
+          devResult.raw,
+        );
       } else {
         await this.log(
           "IMP",
-          `Could not fix ${filePath} — Developer parse failure`,
+          `${file.path}: fix didn't reduce errors — keeping original`,
           undefined,
           devResult.prompt,
           devResult.raw,
         );
       }
     }
-
-    await this.log("IMP", "Improvement pass complete");
   }
 
   // ─────────────────────────────────────────────
@@ -3264,11 +4295,221 @@ output: |
   // ─────────────────────────────────────────────
 
   private async runConsistencyCheck() {
-    // Cross-file consistency issues are caught by the holistic review.
+    await this.runIntegrationPass();
+  }
+
+  /**
+   * Integration Pass — checks that named imports between manifest files
+   * actually exist as exports in the target file.
+   *
+   * Pattern detected:
+   *   import { Foo, Bar } from './SomeFile'
+   *
+   * For each such import we check whether the target file (SomeFile.tsx etc.)
+   * contains a matching export. If not, we call the Developer to fix the
+   * importing file with the specific missing-export error.
+   *
+   * Caps at 3 fix calls — beyond that the output is too broken for targeted
+   * repair and the holistic pass will have already flagged the issues.
+   */
+  private async runIntegrationPass() {
+    if (this.manifest.length < 2) {
+      await this.log("CHK", "Integration check skipped (single-file project)");
+      return;
+    }
+
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) return;
+
+    const readFile = (name: string): string => {
+      const fullPath = path.join(outDir, name);
+      if (!fs.existsSync(fullPath)) return "";
+      return fs.readFileSync(fullPath, "utf-8");
+    };
+
+    /**
+     * Extract all named exports from a file's content.
+     * Matches:
+     *   export function Foo
+     *   export const Foo
+     *   export class Foo
+     *   export type Foo
+     *   export interface Foo
+     *   export { Foo, Bar }
+     *   export default function Foo  (adds "default" + "Foo")
+     */
+    const getExports = (content: string): Set<string> => {
+      const names = new Set<string>();
+      // export default (any form)
+      if (/export\s+default\b/.test(content)) names.add("default");
+      // export default function/class Name
+      for (const m of content.matchAll(
+        /export\s+default\s+(?:function|class)\s+(\w+)/g,
+      )) {
+        names.add(m[1]);
+      }
+      // export function/const/class/type/interface Name
+      for (const m of content.matchAll(
+        /export\s+(?:async\s+)?(?:function|const|let|var|class|type|interface)\s+(\w+)/g,
+      )) {
+        names.add(m[1]);
+      }
+      // export { Foo, Bar as Baz }
+      for (const m of content.matchAll(/export\s*\{([^}]+)\}/g)) {
+        for (const part of m[1].split(",")) {
+          const name = part
+            .trim()
+            .split(/\s+as\s+/)
+            .pop()
+            ?.trim();
+          if (name) names.add(name);
+        }
+      }
+      return names;
+    };
+
+    /**
+     * Resolve a relative import path from an importing file to a manifest
+     * file path. Returns the manifest file path if found, null otherwise.
+     * e.g. import from './TodoList' → 'TodoList.tsx'
+     */
+    const resolveToManifest = (
+      importFrom: string,
+      _importingFile: string,
+    ): string | null => {
+      // Strip leading ./ or ../
+      const base = importFrom.replace(/^\.\.?\//, "").replace(/\\/g, "/");
+      // Try exact match first
+      const exact = this.manifest.find((f) => f.path === base);
+      if (exact) return exact.path;
+      // Try matching basename without extension
+      const baseName = base.replace(/\.\w+$/, "").toLowerCase();
+      const byBaseName = this.manifest.find(
+        (f) => f.path.replace(/\.\w+$/, "").toLowerCase() === baseName,
+      );
+      if (byBaseName) return byBaseName.path;
+      return null;
+    };
+
+    interface ImportIssue {
+      importingFile: string;
+      targetFile: string;
+      missingNames: string[];
+    }
+
+    const issues: ImportIssue[] = [];
+
+    for (const file of this.manifest) {
+      const content = readFile(file.path);
+      if (!content || content.trim().length < 30) continue;
+
+      // Find all named import statements: import { A, B } from './X'
+      const importRegex = /import\s*\{([^}]+)\}\s*from\s*['"]([^'"]+)['"]/g;
+      for (const m of content.matchAll(importRegex)) {
+        const importedNames = m[1]
+          .split(",")
+          .map((s) =>
+            s
+              .trim()
+              .split(/\s+as\s+/)[0]
+              .trim(),
+          )
+          .filter(Boolean);
+        const importPath = m[2];
+
+        // Only check relative imports to other manifest files
+        if (!importPath.startsWith(".")) continue;
+        const targetPath = resolveToManifest(importPath, file.path);
+        if (!targetPath) continue;
+
+        const targetContent = readFile(targetPath);
+        if (!targetContent || targetContent.trim().length < 30) continue;
+
+        const exported = getExports(targetContent);
+        const missing = importedNames.filter((n) => !exported.has(n));
+        if (missing.length > 0) {
+          issues.push({
+            importingFile: file.path,
+            targetFile: targetPath,
+            missingNames: missing,
+          });
+        }
+      }
+    }
+
+    if (issues.length === 0) {
+      await this.log(
+        "CHK",
+        `Integration check PASS — all cross-file imports resolved`,
+      );
+      return;
+    }
+
     await this.log(
       "CHK",
-      `Consistency check — OK (${this.manifest.length} file(s) in manifest)`,
+      `Integration check found ${issues.length} unresolved import(s)`,
     );
+
+    // Cap at 3 fix calls — beyond that the output is too broken for targeted repair
+    const MAX_INTEGRATION_FIXES = 3;
+    let fixCount = 0;
+
+    for (const issue of issues) {
+      if (this.aborted || fixCount >= MAX_INTEGRATION_FIXES) break;
+
+      const { importingFile, targetFile, missingNames } = issue;
+      await this.log(
+        "CHK",
+        `[${importingFile}] imports { ${missingNames.join(", ")} } from '${targetFile}' but those are not exported`,
+      );
+
+      const importingContent = readFile(importingFile);
+      const targetContent = readFile(targetFile);
+      const targetExports = [...getExports(targetContent)].join(", ");
+
+      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+      userMessage += `Current ${importingFile}:\n${this.truncateForPrompt(importingContent, 80)}\n\n`;
+      userMessage += `INTEGRATION ERROR: this file imports { ${missingNames.join(", ")} } from '${targetFile}', but ${targetFile} only exports: ${targetExports || "(nothing)"}\n\n`;
+      userMessage += `Fix the import in ${importingFile} to only use what ${targetFile} actually exports. Rewrite the COMPLETE ${importingFile} file.`;
+      userMessage = this.withCustomInstructions(userMessage);
+
+      const devResult = await runDeveloper(
+        this.model,
+        userMessage,
+        importingFile,
+      );
+
+      if (devResult.block) {
+        const { repaired } = autoRepairOutput(
+          devResult.block.output,
+          importingFile,
+        );
+        const validation = validateOutput(repaired, importingFile);
+        if (validation.valid) {
+          await this.writeOutputFile(importingFile, repaired);
+          await this.log(
+            "CHK",
+            `Fixed import in ${importingFile}`,
+            undefined,
+            devResult.prompt,
+            devResult.raw,
+          );
+          fixCount++;
+        } else {
+          await this.log(
+            "CHK",
+            `Integration fix for ${importingFile} failed validation — keeping original`,
+          );
+        }
+      } else {
+        await this.log(
+          "CHK",
+          `Integration fix for ${importingFile} — Developer parse failure`,
+        );
+      }
+    }
+
+    await this.log("CHK", "Integration pass complete");
   }
 
   // ─────────────────────────────────────────────

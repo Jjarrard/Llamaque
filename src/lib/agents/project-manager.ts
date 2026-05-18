@@ -1,11 +1,13 @@
 import { callOllama } from "@/lib/ollama";
 import { parseTTM, BreakdownBlock } from "@/lib/protocol";
 
-const SYSTEM_PROMPT = `Break the project into 3-5 epics. Each epic = one user flow or screen.
-Think about what the user actually DOES step by step:
-- What do they see first? What do they click? What happens after?
-- Include: input/creation flow, display/results, feedback/responses
+const SYSTEM_PROMPT = `Break the project into 2-3 epics. Each epic = one distinct user interaction.
+Think about what the user actually DOES:
+- What is the main thing they see and do?
+- Are there genuinely separate, non-overlapping interactions?
+MERGE overlapping flows into one epic. A simple app (counter, toggle, form) needs only 2 epics.
 Do NOT mention files or technology. Describe WHAT the user experiences.
+CRITICAL: Only describe features explicitly mentioned in the project description. Do NOT invent features, add functionality, or expand scope beyond what was asked.
 
 Reply:
 >>BREAKDOWN

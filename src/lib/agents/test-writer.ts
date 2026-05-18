@@ -15,19 +15,18 @@ import { parseTTM, ResultBlock } from "@/lib/protocol";
 
 const TSX_SYSTEM_PROMPT = `Write tests for a React component using vitest and @testing-library/react.
 Rules:
-- Import from "vitest" (describe, it, expect) and "@testing-library/react" (render, screen, fireEvent)
+- Import: import { describe, it, expect } from "vitest"
+- Import: import { render, screen, fireEvent } from "@testing-library/react"
 - Import the component: import Component from "./Component"
-- Use describe/it blocks
-- Test that the component renders without crashing
-- Test that key UI elements exist (headings, buttons, inputs)
-- Test that inputs actually work: type into them and verify the value changes
-- Test that buttons trigger visible changes (new elements appear, text updates, counts change)
-- Test the main user flow end-to-end: fill form → submit → see result
-- Keep tests simple and practical — no mocking, no complex setup
-- 3-5 tests total. Each test checks ONE thing. Fewer good tests beats many bad ones.
-- Output ONLY code. No comments in code. No explanations.
+- Use ONLY plain vitest assertions: expect(x).toBeTruthy(), expect(x).toBe(y) — do NOT use toBeInTheDocument or any jest-dom matcher
+- Write EXACTLY 3 tests:
+  1. renders without crashing: render(<Component />) — no assertion needed
+  2. key element exists: render then expect(screen.getByRole("button")).toBeTruthy()
+  3. interaction works: fireEvent.click(button) then expect the visible output changed
+- Keep each test body under 5 lines
+- Output ONLY code. No comments. No explanations.
 
-Reply:
+Reply with EXACTLY this format:
 >>RESULT
 status: DONE
 filePath: Component.test.tsx
@@ -40,24 +39,52 @@ output: |
     it("renders without crashing", () => {
       render(<Component />);
     });
+    it("shows a button", () => {
+      render(<Component />);
+      expect(screen.getByRole("button")).toBeTruthy();
+    });
+    it("button click changes output", () => {
+      const { getByRole, getByText } = render(<Component />);
+      fireEvent.click(getByRole("button"));
+      expect(getByText(/\d/)).toBeTruthy();
+    });
   });
 >>END`;
 
-const JS_SYSTEM_PROMPT = `Write tests using vitest.
+const JS_SYSTEM_PROMPT = `Write tests for a TypeScript module using vitest.
 Rules:
-- Import from "vitest" (describe, it, expect)
-- Import the file under test
-- Test key functions and their return values
-- Test edge cases (empty input, errors)
-- 3-5 tests total. Output ONLY code.
+- Import ONLY from "vitest": import { describe, it, expect } from "vitest"
+- Import the module under test using THIS EXACT PATH: import * as mod from "./__MODULE__"
+  (replace __MODULE__ with the filename WITHOUT extension — e.g. main, utils, calculator)
+- Do NOT import from any other file. Do NOT invent helper filenames.
+- Do NOT write implementation code — test code ONLY.
+- Use ONLY plain vitest assertions: expect(x).toBe(y), expect(x).toBeTruthy(), expect(() => fn()).toThrow()
+- Write EXACTLY 3 tests:
+  1. module loads: expect(mod).toBeTruthy()
+  2. a main function returns the expected type or value
+  3. an edge case (zero, empty, or invalid input)
+- Keep each test body under 5 lines
 
-Reply:
+Reply with EXACTLY this format:
 >>RESULT
 status: DONE
-filePath: (testfile)
+filePath: (testfile.test.ts)
 output: |
   import { describe, it, expect } from "vitest";
-  ...
+  import * as mod from "./calculator";
+
+  describe("calculator", () => {
+    it("module loads", () => {
+      expect(mod).toBeTruthy();
+    });
+    it("calculates tip correctly", () => {
+      const result = mod.calculateTip(100, 15);
+      expect(typeof result).toBe("number");
+    });
+    it("handles zero bill", () => {
+      expect(mod.calculateTip(0, 15)).toBe(0);
+    });
+  });
 >>END`;
 
 export interface TestWriterResult {
@@ -74,28 +101,55 @@ export async function runTestWriter(
   projectDescription: string,
   requirements: string[],
   targetFile?: string,
+  exportName?: string,
+  fileContent?: string,
 ): Promise<TestWriterResult> {
   const ext = targetFile?.split(".").pop()?.toLowerCase() || "tsx";
   const isReact = ext === "tsx" || ext === "jsx";
+
+  // Use the real export name if known; fall back to "Component"
+  const componentName = exportName || "Component";
+  // Derive test file name from target
+  const baseName = (targetFile || "Component").replace(/\.\w+$/, "");
+  const testExt = isReact ? "tsx" : ext;
+  const testFileName = `${baseName}.test.${testExt}`;
+
+  // Personalise the TSX system prompt with the actual export name
+  const tsxPrompt = isReact
+    ? TSX_SYSTEM_PROMPT.replace(
+        /import Component from/g,
+        `import ${componentName} from`,
+      )
+        .replace(/import Component\b/g, `import ${componentName}`)
+        .replace(/filePath: Component\.test\.tsx/g, `filePath: ${testFileName}`)
+        .replace(/\bComponent\b(?=\s*\()/g, componentName)
+    : JS_SYSTEM_PROMPT.replace(/__MODULE__/g, baseName);
 
   let userMessage = `Project: "${projectName}" — ${projectDescription}\n\n`;
   userMessage += `Requirements:\n`;
   userMessage += requirements.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   if (isReact) {
-    userMessage += `\n\nWrite 3-5 tests for this React component. Focus on:\n`;
+    userMessage += `\n\nWrite 3-5 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`. Focus on:\n`;
     userMessage += `- Does it render?\n`;
     userMessage += `- Are key UI elements present?\n`;
     userMessage += `- Do inputs accept and reflect typed values?\n`;
     userMessage += `- Does the main flow work (fill in → submit → see result)?\n`;
   } else {
-    userMessage += `\n\nWrite 3-5 tests for ${targetFile || "the code"}. Focus on:\n`;
-    userMessage += `- Do the main functions work correctly?\n`;
-    userMessage += `- Are edge cases handled?\n`;
-    userMessage += `- Does the core logic produce expected output?\n`;
+    userMessage += `\n\nWrite EXACTLY 3 tests for \`./${baseName}\`. Import using: import * as mod from "./${baseName}"\n`;
+    userMessage += `Do NOT import from any other path. Do NOT write implementation code.\n`;
+    userMessage += `Focus on: does the module load, do main functions return expected types, edge cases.\n`;
   }
 
-  const systemPrompt = isReact ? TSX_SYSTEM_PROMPT : JS_SYSTEM_PROMPT;
+  // Inject the actual source code so tests use correct prop names and exports
+  if (fileContent && fileContent.trim().length > 50) {
+    const snippet = fileContent.split("\n").slice(0, 80).join("\n");
+    userMessage += `\n\nACTUAL SOURCE CODE of ${targetFile} (use these exact export names):\n${snippet}`;
+  }
+
+  const systemPrompt = isReact
+    ? tsxPrompt
+    : JS_SYSTEM_PROMPT.replace(/__MODULE__/g, baseName);
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,
@@ -109,6 +163,29 @@ export async function runTestWriter(
   if (block && block.command === "RESULT") {
     const result = block as ResultBlock;
     return { tests: result.output, raw: text, prompt, tokens, durationMs };
+  }
+
+  // Fallback: model used >>filename.test.tsx instead of >>RESULT.
+  // Extract code from a markdown fence or bare code block.
+  const fenceMatch = text.match(
+    /```(?:tsx?|jsx?|typescript|javascript)?\s*\n([\s\S]+?)```/i,
+  );
+  if (fenceMatch) {
+    const code = fenceMatch[1].trim();
+    if (code.includes("describe(") || code.includes("it(")) {
+      return { tests: code, raw: text, prompt, tokens, durationMs };
+    }
+  }
+  // Last resort: if the raw text after the >>filename line looks like a test file, use it
+  const afterCommand = text.replace(/^>>[^\n]+\n/, "").trim();
+  if (
+    afterCommand.includes("describe(") &&
+    afterCommand.includes("it(") &&
+    afterCommand.length > 50
+  ) {
+    // Strip trailing >>END if present
+    const code = afterCommand.replace(/\n?>>END\s*$/, "").trim();
+    return { tests: code, raw: text, prompt, tokens, durationMs };
   }
 
   return { tests: null, raw: text, prompt, tokens, durationMs };

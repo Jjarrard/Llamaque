@@ -8,6 +8,27 @@
       "when": 1772149019808,
       "tag": "0000_lean_reptil",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1747353600000,
+      "tag": "0001_add_current_stage",
+      "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1747440000000,
+      "tag": "0002_add_activity_tracking",
+      "breakpoints": true
+    },
+    {
+      "idx": 3,
+      "version": "6",
+      "when": 1747526400000,
+      "tag": "0003_add_feedback_ledger",
+      "breakpoints": true
     }
   ]
 }

@@ -9,11 +9,7 @@ import {
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
-function task(
-  status: string,
-  description = "Task",
-  depth = 2,
-): TaskLike {
+function task(status: string, description = "Task", depth = 2): TaskLike {
   return { status, description, depth, parentId: null };
 }
 
@@ -152,11 +148,7 @@ describe("deriveCurrentStatus", () => {
   });
 
   it("returns decompose phase when tasks have decomposing status", () => {
-    const result = deriveCurrentStatus(
-      [task("decomposing")],
-      "running",
-      true,
-    );
+    const result = deriveCurrentStatus([task("decomposing")], "running", true);
     expect(result.phase).toBe("decompose");
   });
 
@@ -221,12 +213,7 @@ describe("deriveCurrentStatus", () => {
   });
 
   it("calculates progress percentage correctly", () => {
-    const tasks = [
-      task("done"),
-      task("done"),
-      task("done"),
-      task("ready"),
-    ];
+    const tasks = [task("done"), task("done"), task("done"), task("ready")];
     const result = deriveCurrentStatus(tasks, "running", true);
     expect(result.progressPct).toBe(75);
   });
@@ -267,11 +254,6 @@ describe("deriveStageStates", () => {
     expect(states.architect).toBe("done");
   });
 
-  it("implies tdd=done when execute is done", () => {
-    const states = deriveStageStates(NO_TASKS, ["execute"], false, null);
-    expect(states.tdd).toBe("done");
-  });
-
   it("marks active stage when running with explicit activeStage", () => {
     const states = deriveStageStates(
       NO_TASKS,
@@ -293,16 +275,20 @@ describe("deriveStageStates", () => {
     expect(states.breakdown).toBe("active");
   });
 
-  it("does not mark a done stage as active even if explicitly passed", () => {
+  it("when activeStage is already done, fallback marks first non-done stage active", () => {
+    // currentStage can be stale in a crash/edge case — it should never
+    // re-mark a done stage active; instead the fallback fires.
+    // With new stage order (tdd before execute): if execute is done but tdd
+    // is not, the first non-done stage is tdd.
     const states = deriveStageStates(
       NO_TASKS,
-      ["architect"],
+      ["architect", "decompose", "breakdown", "execute"],
       true,
-      "architect",
+      "execute", // currentStage is stale — execute is already in completedStages
     );
-    // architect is done — should fall through to decompose as active
-    expect(states.architect).toBe("done");
-    expect(states.decompose).toBe("active");
+    expect(states.execute).toBe("done");
+    expect(states.tdd).toBe("active"); // first non-done stage in current order
+    expect(states.breakdown).toBe("done");
   });
 
   it("marks breakdown as approval when tasks await approval and breakdown not done", () => {
@@ -354,14 +340,14 @@ describe("deriveStageStates", () => {
     }
   });
 
-  it("fallback active-stage picker reaches feedback when all prior stages are done", () => {
+  it("fallback active-stage picker does NOT reach feedback — feedback is user-triggered", () => {
     const states = deriveStageStates(
       NO_TASKS,
-      ["architect", "decompose", "breakdown", "tdd", "execute", "qa"],
+      ["architect", "decompose", "breakdown", "execute", "tdd", "qa"],
       true,
-      null, // no explicit hint — fallback picker must find 'feedback'
+      null, // all automated stages done — feedback must stay pending, not active
     );
-    expect(states.feedback).toBe("active");
+    expect(states.feedback).toBe("pending");
   });
 });
 
@@ -393,7 +379,9 @@ describe("deriveIsRunning", () => {
   it("TDD phase: false when project.status='review' and tasks all ready", () => {
     // Between manual stage runs the DB can hold 'review'. Tasks are still
     // 'ready', but with no active run the UI should NOT show running.
-    expect(deriveIsRunning("review", [task("ready"), task("done")])).toBe(false);
+    expect(deriveIsRunning("review", [task("ready"), task("done")])).toBe(
+      false,
+    );
   });
 
   // ── Task-status fallback (execute / decompose / qa phases) ─────────────────
@@ -404,7 +392,9 @@ describe("deriveIsRunning", () => {
   });
 
   it("true when a task is decomposing", () => {
-    expect(deriveIsRunning("review", [task("decomposing"), task("ready")])).toBe(true);
+    expect(
+      deriveIsRunning("review", [task("decomposing"), task("ready")]),
+    ).toBe(true);
   });
 
   it("true when a task is qa_check", () => {
@@ -445,10 +435,14 @@ describe("deriveIsRunning", () => {
   it("'ready' is NOT in ACTIVE_TASK_STATUSES — it means queued, not actively processing", () => {
     // This is the heart of the TDD bug: tasks are "ready" during TDD but that
     // does NOT mean the pipeline is running. Only project.status="running" does.
-    expect((ACTIVE_TASK_STATUSES as readonly string[]).includes("ready")).toBe(false);
+    expect((ACTIVE_TASK_STATUSES as readonly string[]).includes("ready")).toBe(
+      false,
+    );
   });
 
   it("'stuck' is NOT in ACTIVE_TASK_STATUSES", () => {
-    expect((ACTIVE_TASK_STATUSES as readonly string[]).includes("stuck")).toBe(false);
+    expect((ACTIVE_TASK_STATUSES as readonly string[]).includes("stuck")).toBe(
+      false,
+    );
   });
 });

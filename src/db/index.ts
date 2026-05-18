@@ -38,4 +38,21 @@ if (!globalForDb._migrated) {
   globalForDb._sqlite.exec(
     `UPDATE projects SET status = 'paused' WHERE status = 'running'`,
   );
+  // Clear current_stage if the column exists (added in migration 0001).
+  // Wrapped separately so it doesn't crash on pre-migration DBs.
+  try {
+    globalForDb._sqlite.exec(
+      `UPDATE projects SET current_stage = NULL WHERE current_stage IS NOT NULL`,
+    );
+  } catch {
+    // Column doesn't exist yet — migration will add it on next request
+  }
+  // Clear activity state (migration 0002)
+  try {
+    globalForDb._sqlite.exec(
+      `UPDATE projects SET current_activity = NULL, stage_started_at = NULL WHERE current_activity IS NOT NULL OR stage_started_at IS NOT NULL`,
+    );
+  } catch {
+    // Columns don't exist yet
+  }
 }

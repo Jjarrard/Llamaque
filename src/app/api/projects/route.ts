@@ -73,6 +73,13 @@ export async function POST(request: NextRequest) {
     );
   }
 
+  if (!body.primaryModel || typeof body.primaryModel !== "string") {
+    return NextResponse.json(
+      { error: "primaryModel is required" },
+      { status: 400 },
+    );
+  }
+
   // Prevent duplicate projects with the same name created within last 30 seconds
   const recentDuplicate = await db.query.projects.findFirst({
     where: and(
@@ -90,7 +97,7 @@ export async function POST(request: NextRequest) {
       name: body.name,
       description: body.description,
       customInstructions: body.customInstructions || null,
-      primaryModel: body.primaryModel || "qwen3:1.7b",
+      primaryModel: body.primaryModel,
     })
     .returning();
 

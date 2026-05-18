@@ -11,7 +11,8 @@
     "test:watch": "vitest",
     "test:unit": "vitest run --config vitest.unit.config.mts",
     "test:unit:watch": "vitest --config vitest.unit.config.mts",
-    "db:generate": "drizzle-kit generate"
+    "db:generate": "drizzle-kit generate",
+    "smoke": "tsx --tsconfig tsconfig.json scripts/smoke-test.ts"
   },
   "dependencies": {
     "better-sqlite3": "^12.6.2",

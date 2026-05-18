@@ -25,8 +25,14 @@ function getSystemPrompt(filePath: string): string {
 - ALL event handlers must do something real. NEVER use alert() or console.log() as the main action.
 - ALL inputs must be controlled: value={state} + onChange={handler}
 - State must stay in sync. If you add items to an array, update ALL related arrays too.
-- Show clear user feedback: loading states, success messages, results/counts after actions.
-- No placeholder code. Every feature must actually work end-to-end.
+- KEEP IT SIMPLE: for synchronous state updates (counters, toggles, form fields), update state DIRECTLY in the handler — no fake async delays, no loading spinners, no success toasts.
+- For TIMERS and real time-based behavior: use useEffect + setInterval/setTimeout + useRef to store the interval ID. Example: const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null); then inside useEffect start/clear the interval.
+- Do NOT use class-based services, managers, or singletons inside a React component file. Use hooks instead.
+- Do NOT invent features not mentioned in the requirements: no fetch() calls unless the spec asks for them.
+- Do NOT create sub-components for simple interactive elements. Buttons, inputs, and small display elements belong inline in the main component. Only extract a named function component when it is reused in multiple places or is genuinely complex.
+- If the prompt lists "FILES YOU MUST IMPORT FROM", you MUST import those components at the top of your file and use them — do NOT reimplement their logic inline.
+- Every useState call must be inside the component that uses it. Do NOT call a setState function if the matching useState is not in the same component.
+- Only import from: "react", "react-dom", and "./siblingFile" paths. Do NOT import from npm packages that are not react or react-dom.
 - Output ONLY code. No comments in code. No explanations before or after code.
 
 Reply:
@@ -46,6 +52,7 @@ output: |
 - Use proper TypeScript types and interfaces
 - Export functions and types that other files may need
 - Handle errors properly
+- If the prompt lists "FILES YOU MUST IMPORT FROM", import and use those modules — do NOT reimplement their logic.
 - Output ONLY code. No explanations.
 
 Reply:
@@ -250,12 +257,18 @@ export async function runDeveloper(
   durationMs: number;
 }> {
   const systemPrompt = getSystemPrompt(filePath || "output.txt");
+  const fp = filePath || "output.txt";
+
+  // Strong prefill: commit the model to the RESULT block structure so it can't
+  // skip straight to raw code output (a common failure with Gemma 4 / Qwen3).
+  const prefill = `>>RESULT\nstatus: DONE\nfilePath: ${fp}\noutput: |\n  `;
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,
     "developer",
     systemPrompt,
     userMessage,
+    { prefill },
   );
 
   const block = parseTTM(text);

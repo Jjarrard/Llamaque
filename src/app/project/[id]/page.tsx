@@ -38,13 +38,24 @@ type Project = {
   primaryModel: string;
   completedStages: string;
   fileManifest: string | null;
+  currentStage: string | null;
+  currentActivity: string | null;
+  activityCounter: number;
+  stageStartedAt: number | null;
+  feedbackLedger: string | null;
 };
 
 function getPrimaryFile(manifestJson: string | null | undefined): string {
   if (!manifestJson) return "output.txt";
   try {
     const files = JSON.parse(manifestJson) as { path: string }[];
-    return files[0]?.path || "output.txt";
+    if (!files.length) return "output.txt";
+    // Prefer a previewable file: HTML > TSX/JSX > first file
+    const html = files.find((f) => /\.(html?|htm)$/i.test(f.path));
+    if (html) return html.path;
+    const react = files.find((f) => /\.[jt]sx$/i.test(f.path));
+    if (react) return react.path;
+    return files[0].path;
   } catch {
     return "output.txt";
   }
@@ -64,8 +75,8 @@ function generateRunInstructions(
 ): string {
   if (!manifest || manifest.length === 0) return "No output files yet.";
 
-  const extensions = manifest.map((f) =>
-    f.path.split(".").pop()?.toLowerCase() || "",
+  const extensions = manifest.map(
+    (f) => f.path.split(".").pop()?.toLowerCase() || "",
   );
   const hasReact = extensions.some((e) => ["tsx", "jsx"].includes(e));
   const hasHTML = extensions.some((e) => ["html", "htm"].includes(e));
@@ -78,7 +89,9 @@ function generateRunInstructions(
 
   if (hasReact) {
     lines.push(`## React (TSX/JSX)\n`);
-    lines.push(`You can preview TSX files directly in the browser using the **Preview** button.\n`);
+    lines.push(
+      `You can preview TSX files directly in the browser using the **Preview** button.\n`,
+    );
     lines.push(`To run locally:\n`);
     lines.push(`\`\`\`bash`);
     lines.push(`# Create a new React project`);
@@ -99,7 +112,9 @@ function generateRunInstructions(
 
   if (hasHTML) {
     lines.push(`## HTML\n`);
-    lines.push(`Open the .html file directly in a browser, or use a local server:\n`);
+    lines.push(
+      `Open the .html file directly in a browser, or use a local server:\n`,
+    );
     lines.push(`\`\`\`bash`);
     lines.push(`npx serve .`);
     lines.push(`# or`);
@@ -110,17 +125,25 @@ function generateRunInstructions(
   if (hasPython) {
     lines.push(`## Python\n`);
     lines.push(`\`\`\`bash`);
-    lines.push(`python3 ${manifest.find((f) => f.path.endsWith(".py"))?.path || "main.py"}`);
+    lines.push(
+      `python3 ${manifest.find((f) => f.path.endsWith(".py"))?.path || "main.py"}`,
+    );
     lines.push(`\`\`\``);
-    lines.push(`\nInstall dependencies if needed: \`pip install -r requirements.txt\``);
+    lines.push(
+      `\nInstall dependencies if needed: \`pip install -r requirements.txt\``,
+    );
   }
 
   if (hasNode) {
     lines.push(`## Node.js\n`);
     lines.push(`\`\`\`bash`);
-    lines.push(`node ${manifest.find((f) => f.path.endsWith(".js") || f.path.endsWith(".ts"))?.path || "index.js"}`);
+    lines.push(
+      `node ${manifest.find((f) => f.path.endsWith(".js") || f.path.endsWith(".ts"))?.path || "index.js"}`,
+    );
     lines.push(`\`\`\``);
-    lines.push(`\nFor TypeScript: \`npx tsx ${manifest.find((f) => f.path.endsWith(".ts"))?.path || "index.ts"}\``);
+    lines.push(
+      `\nFor TypeScript: \`npx tsx ${manifest.find((f) => f.path.endsWith(".ts"))?.path || "index.ts"}\``,
+    );
   }
 
   if (hasMarkdown && !hasReact && !hasHTML && !hasPython && !hasNode) {
@@ -180,6 +203,14 @@ const agentClass: Record<string, string> = {
   EDT: styles.logAgentEDT,
   SYS: styles.logAgentSYS,
   RECOVER: styles.logAgentRECOVER,
+  ARCH: styles.logAgentARCH,
+  TDD: styles.logAgentTDD,
+  JUDGE: styles.logAgentJUDGE,
+  SUM: styles.logAgentSUM,
+  CHK: styles.logAgentCHK,
+  FBK: styles.logAgentFBK,
+  IMP: styles.logAgentIMP,
+  PLAN: styles.logAgentPLAN,
 };
 
 const badgeClass: Record<string, string> = {
@@ -200,6 +231,39 @@ function buildTree(tasks: Task[]) {
   return byParent;
 }
 
+type LedgerStatus = "pending" | "active" | "done" | "failed" | "skipped";
+
+type LedgerItem = {
+  id: string;
+  kind: "locate" | "edit" | "verify" | "rewrite" | "note";
+  status: LedgerStatus;
+  file?: string;
+  instruction?: string;
+  window?: { startLine: number; endLine: number };
+  attempts: number;
+  evidence?: string;
+  before?: string;
+  after?: string;
+  startedAt: number;
+  updatedAt: number;
+};
+
+type FeedbackLedger = {
+  goal: string;
+  startedAt: number;
+  finishedAt?: number;
+  items: LedgerItem[];
+};
+
+function parseLedger(raw: string | null | undefined): FeedbackLedger | null {
+  if (!raw) return null;
+  try {
+    return JSON.parse(raw) as FeedbackLedger;
+  } catch {
+    return null;
+  }
+}
+
 export default function ProjectPage() {
   const params = useParams();
   const router = useRouter();
@@ -210,9 +274,11 @@ export default function ProjectPage() {
   const [logEntries, setLogEntries] = useState<LogEntry[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [running, setRunning] = useState(false);
-  const [pipelineSessionActive, setPipelineSessionActive] = useState(false);
-  const consecutiveNotRunningRef = useRef(0);
-  const effectiveRunning = running || pipelineSessionActive;
+  // Optimistic running: set true immediately when user clicks Run so the UI
+  // shows "running" before the first DB poll confirms it. Expires after 8s.
+  const [optimisticRunning, setOptimisticRunning] = useState(false);
+  const optimisticStartRef = useRef(0);
+  const effectiveRunning = running || optimisticRunning;
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [expandedLogs, setExpandedLogs] = useState<
     Record<number, LogDetail | null>
@@ -239,6 +305,10 @@ export default function ProjectPage() {
   const [editingDesc, setEditingDesc] = useState(false);
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
+  const [runStartTime, setRunStartTime] = useState<Date | null>(null);
+  const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  const [streamOutput, setStreamOutput] = useState<string>("");
+  const streamOutputRef = useRef<HTMLPreElement>(null);
 
   const toggleAccordion = (taskId: number) => {
     setOpenAccordions((prev) => {
@@ -279,18 +349,14 @@ export default function ProjectPage() {
       const data = await res.json();
       setProject(data.project);
       setTaskList(data.tasks);
-      // Use the shared deriveIsRunning logic (also covered by unit tests)
-      // so any fix here is automatically validated.
       const isNowRunning = deriveIsRunning(data.project.status, data.tasks);
       setRunning(isNowRunning);
+      // Once the DB confirms running, optimistic flag is no longer needed.
+      // If not running and the 8s grace window has passed, expire optimistic.
       if (isNowRunning) {
-        consecutiveNotRunningRef.current = 0;
-        setPipelineSessionActive(true);
-      } else {
-        consecutiveNotRunningRef.current += 1;
-        if (consecutiveNotRunningRef.current >= 2) {
-          setPipelineSessionActive(false);
-        }
+        setOptimisticRunning(false);
+      } else if (Date.now() - optimisticStartRef.current > 8000) {
+        setOptimisticRunning(false);
       }
     }
   }, [projectId]);
@@ -450,6 +516,58 @@ export default function ProjectPage() {
   // Poll task status while running — use a faster 2s interval
   // and do a final fetch when running transitions to false
   const prevRunningRef = useRef(false);
+
+  // Track elapsed time while pipeline is running
+  useEffect(() => {
+    if (!effectiveRunning) {
+      setElapsedSeconds(0);
+      return;
+    }
+    const startedAt = runStartTime ?? new Date();
+    const interval = setInterval(() => {
+      setElapsedSeconds(Math.floor((Date.now() - startedAt.getTime()) / 1000));
+    }, 1000);
+    return () => clearInterval(interval);
+  }, [effectiveRunning, runStartTime]);
+
+  // Poll for live streaming token output while running
+  useEffect(() => {
+    if (!effectiveRunning) {
+      setStreamOutput("");
+      return;
+    }
+    let cancelled = false;
+    const poll = async () => {
+      if (cancelled) return;
+      try {
+        const res = await fetch(`/api/projects/${projectId}/stream/current`);
+        if (res.status === 204) {
+          // No active stream — model between calls
+          if (!cancelled) setStreamOutput("");
+        } else if (res.ok) {
+          const data = await res.json();
+          if (!cancelled) {
+            setStreamOutput(data.text ?? "");
+            // Auto-scroll stream output panel
+            if (streamOutputRef.current) {
+              streamOutputRef.current.scrollTop =
+                streamOutputRef.current.scrollHeight;
+            }
+          }
+        }
+      } catch {
+        // Ignore
+      }
+      if (!cancelled) {
+        setTimeout(poll, 400);
+      }
+    };
+    poll();
+    return () => {
+      cancelled = true;
+    };
+  }, [effectiveRunning, projectId]);
+
   useEffect(() => {
     if (effectiveRunning) {
       prevRunningRef.current = true;
@@ -472,12 +590,10 @@ export default function ProjectPage() {
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      setRunning(true);
-      setPipelineSessionActive(true);
-      consecutiveNotRunningRef.current = 0;
-      // Don't call fetchProject() immediately — the 2s polling starts
-      // now that running=true. Calling it here races with the pipeline
-      // setting status to "running" in the DB and can revert running=false.
+      optimisticStartRef.current = Date.now();
+      setOptimisticRunning(true);
+      setRunStartTime(new Date());
+      setElapsedSeconds(0);
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start pipeline");
@@ -486,7 +602,9 @@ export default function ProjectPage() {
 
   const handleStop = async () => {
     await fetch(`/api/projects/${projectId}/run`, { method: "DELETE" });
+    setOptimisticRunning(false);
     setRunning(false);
+    setRunStartTime(null);
     fetchProject();
   };
 
@@ -579,10 +697,10 @@ export default function ProjectPage() {
       body: JSON.stringify({ stage: "qa" }),
     });
     if (res.ok) {
-      setRunning(true);
-      setPipelineSessionActive(true);
-      consecutiveNotRunningRef.current = 0;
-      // Same as handleRun — don't race fetchProject against pipeline startup
+      optimisticStartRef.current = Date.now();
+      setOptimisticRunning(true);
+      setRunStartTime(new Date());
+      setElapsedSeconds(0);
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start QA pass");
@@ -590,7 +708,7 @@ export default function ProjectPage() {
   };
 
   const handleSubmitFeedback = async () => {
-    if (!feedbackText.trim() || running || pipelineSessionActive) return;
+    if (!feedbackText.trim() || effectiveRunning) return;
     setError(null);
     const res = await fetch(`/api/projects/${projectId}/run`, {
       method: "POST",
@@ -601,11 +719,11 @@ export default function ProjectPage() {
       }),
     });
     if (res.ok) {
-      setRunning(true);
-      setPipelineSessionActive(true);
-      consecutiveNotRunningRef.current = 0;
+      optimisticStartRef.current = Date.now();
+      setOptimisticRunning(true);
+      setRunStartTime(new Date());
+      setElapsedSeconds(0);
       setFeedbackText("");
-      // Keep feedback panel open so the running spinner is visible
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start feedback pass");
@@ -665,13 +783,21 @@ export default function ProjectPage() {
     : [];
 
   // Determine which stage is currently running from the most recent STAGE log
+  // in the CURRENT run only (ignore logs from previous runs).
+  // activeStage comes directly from the DB field project.currentStage —
+  // written by the pipeline at stage start, cleared at stage end.
+  // No log inference needed.
   const activeStage: string | null = effectiveRunning
-    ? ([...logEntries].reverse().find((e) => e.agent === "STAGE")?.message ??
-      null)
+    ? (project?.currentStage ?? null)
     : null;
 
   const currentStatus = project
-    ? deriveCurrentStatus(taskList, project.status, effectiveRunning, activeStage)
+    ? deriveCurrentStatus(
+        taskList,
+        project.status,
+        effectiveRunning,
+        activeStage,
+      )
     : {
         label: "Loading…",
         phase: "idle",
@@ -679,7 +805,12 @@ export default function ProjectPage() {
         progressPct: 0,
       };
 
-  const stageStates = deriveStageStates(taskList, completedStages, effectiveRunning, activeStage);
+  const stageStates = deriveStageStates(
+    taskList,
+    completedStages,
+    effectiveRunning,
+    activeStage,
+  );
 
   const statusColorClass: Record<string, string> = {
     muted: styles.statusBarMuted,
@@ -712,6 +843,49 @@ export default function ProjectPage() {
 
   // Unique agent names for filter (exclude STAGE)
   const logAgents = Array.from(new Set(visibleLogs.map((e) => e.agent)));
+
+  // Last activity for "Now Doing" banner — prefer DB-backed currentActivity
+  // (set by pipeline in real-time) over log polling.
+  const lastActivity =
+    visibleLogs.length > 0 ? visibleLogs[visibleLogs.length - 1] : null;
+
+  // Parse "[AGENT] message" out of the DB activity field
+  const liveActivity = (() => {
+    const raw = project?.currentActivity;
+    if (!raw) return null;
+    const m = raw.match(/^\[([^\]]+)\]\s*(.*)$/);
+    if (m) return { agent: m[1], message: m[2] };
+    return { agent: "SYS", message: raw };
+  })();
+
+  // File status derived from manifest + task list
+  const manifestFiles: ManifestEntry[] = (() => {
+    if (!project?.fileManifest) return [];
+    try {
+      return JSON.parse(project.fileManifest);
+    } catch {
+      return [];
+    }
+  })();
+  const fileStatusMap: Record<string, "pending" | "writing" | "done"> = {};
+  for (const f of manifestFiles) {
+    const fileTasks = taskList.filter((t) => t.filePath === f.path);
+    if (fileTasks.length === 0) {
+      fileStatusMap[f.path] = "pending";
+    } else if (fileTasks.some((t) => t.status === "executing")) {
+      fileStatusMap[f.path] = "writing";
+    } else if (fileTasks.every((t) => t.status === "done")) {
+      fileStatusMap[f.path] = "done";
+    } else {
+      fileStatusMap[f.path] = "pending";
+    }
+  }
+
+  // Format elapsed run time as "1m 32s" or "45s"
+  const formatElapsed = (s: number) => {
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
 
   /** Render a task and its children recursively */
   const renderTask = (task: Task) => {
@@ -750,7 +924,9 @@ export default function ProjectPage() {
             </button>
           </div>
         ) : (
-          <div className={styles.taskRow}>
+          <div
+            className={`${styles.taskRow} ${task.status === "executing" ? styles.taskRowExecuting : ""}`}
+          >
             <span className={`${styles.depthLabel} ${depthLabelCls}`}>
               {depthLabel}
             </span>
@@ -946,7 +1122,8 @@ export default function ProjectPage() {
             onBlur={handleSaveDesc}
             onKeyDown={(e) => {
               if (e.key === "Escape") setEditingDesc(false);
-              if (e.key === "Enter" && (e.metaKey || e.ctrlKey)) handleSaveDesc();
+              if (e.key === "Enter" && (e.metaKey || e.ctrlKey))
+                handleSaveDesc();
             }}
           />
         ) : (
@@ -958,21 +1135,40 @@ export default function ProjectPage() {
             }}
             title="Click to edit description"
           >
-            {project.description || <span className={styles.projectDescPlaceholder}>Add a description…</span>}
+            {project.description || (
+              <span className={styles.projectDescPlaceholder}>
+                Add a description…
+              </span>
+            )}
           </p>
         )}
       </div>
 
       {/* ── Action Bar: status + stage tracker + actions ── */}
       <div
-        className={`${styles.actionBar} ${statusColorClass[currentStatus.color] || styles.statusBarMuted}`}
+        className={`${styles.actionBar} ${statusColorClass[currentStatus.color] || styles.statusBarMuted} ${effectiveRunning ? styles.actionBarRunning : ""}`}
       >
         {/* Left: status label */}
         <div className={styles.actionBarStatus}>
-          {currentStatus.color === "accent" && (
+          {effectiveRunning ? (
+            <span className={styles.runningDot} />
+          ) : currentStatus.color === "accent" ? (
             <span className={styles.statusBarPulse}>●</span>
+          ) : null}
+          <span
+            className={`${styles.actionBarLabel} ${effectiveRunning ? styles.actionBarLabelRunning : ""}`}
+          >
+            {effectiveRunning
+              ? activeStage
+                ? `Running · ${activeStage.toUpperCase()}`
+                : "Running…"
+              : currentStatus.label}
+          </span>
+          {effectiveRunning && elapsedSeconds > 0 && (
+            <span className={styles.elapsedBadge}>
+              {formatElapsed(elapsedSeconds)}
+            </span>
           )}
-          <span className={styles.actionBarLabel}>{currentStatus.label}</span>
         </div>
 
         {/* Right: utility + stop/run-all */}
@@ -992,7 +1188,11 @@ export default function ProjectPage() {
               <button
                 className={styles.actionUtility}
                 onClick={handleToggleOutput}
-                title={showOutput ? "Hide files" : "View generated files & run instructions"}
+                title={
+                  showOutput
+                    ? "Hide files"
+                    : "View generated files & run instructions"
+                }
               >
                 {showOutput ? "✕ Files" : "📁 Files"}
               </button>
@@ -1042,7 +1242,8 @@ export default function ProjectPage() {
           // Can run this stage if upstream is done and not currently running
           const upstreamDone =
             isFirst || stageStates[PIPELINE_STAGES[i - 1].key] === "done";
-          const canRun = !effectiveRunning && state === "pending" && upstreamDone;
+          const canRun =
+            !effectiveRunning && state === "pending" && upstreamDone;
           const canRetry = !effectiveRunning && state === "done";
           const isApproval = state === "approval";
 
@@ -1132,6 +1333,218 @@ export default function ProjectPage() {
         })}
       </div>
 
+      {/* ── Activity Banner — live "what is happening right now" ── */}
+      {effectiveRunning && (liveActivity || lastActivity) && (
+        <div className={styles.activityBanner}>
+          <span className={styles.activityPulse} />
+          <span
+            className={`${styles.activityAgent} ${agentClass[liveActivity?.agent || lastActivity?.agent || "SYS"] || ""}`}
+          >
+            [{liveActivity?.agent || lastActivity?.agent}]
+          </span>
+          <span className={styles.activityMessage}>
+            {liveActivity?.message || lastActivity?.message}
+          </span>
+          {activeStage && (
+            <span className={styles.activityStage}>
+              {activeStage.toUpperCase()}
+              {project?.stageStartedAt
+                ? ` · ${formatElapsed(Math.floor((Date.now() - project.stageStartedAt) / 1000))}`
+                : ""}
+              {project && project.activityCounter > 0
+                ? ` · ${project.activityCounter} updates`
+                : ""}
+            </span>
+          )}
+        </div>
+      )}
+
+      {/* ── File Status Panel — live file manifest with status dots ── */}
+      {manifestFiles.length > 0 && (
+        <div className={styles.fileStatusPanel}>
+          <div className={styles.fileStatusHeader}>
+            <span className={styles.fileStatusTitle}>Files</span>
+            <span className={styles.fileStatusCount}>
+              {Object.values(fileStatusMap).filter((s) => s === "done").length}/
+              {manifestFiles.length} done
+            </span>
+          </div>
+          <div className={styles.fileStatusGrid}>
+            {manifestFiles.map((f) => {
+              const st = fileStatusMap[f.path] ?? "pending";
+              return (
+                <div
+                  key={f.path}
+                  className={`${styles.fileStatusItem} ${styles[`fileStatus_${st}`]}`}
+                >
+                  <span className={styles.fileStatusDot} />
+                  <span className={styles.fileStatusPath}>{f.path}</span>
+                  {st === "writing" && (
+                    <span className={styles.fileStatusWriting}>writing…</span>
+                  )}
+                  {st === "done" && (
+                    <span className={styles.fileStatusDoneLabel}>✓</span>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </div>
+      )}
+
+      {/* ── Live Model Output — streaming token view ── */}
+      {effectiveRunning && (
+        <div className={styles.streamPanel}>
+          <div className={styles.streamPanelHeader}>
+            <span className={styles.streamPanelTitle}>
+              {streamOutput ? (
+                <>
+                  <span className={styles.streamPanelDot} />
+                  Model Output
+                </>
+              ) : (
+                <>
+                  <span className={styles.streamPanelWaiting} />
+                  Waiting for model…
+                </>
+              )}
+            </span>
+            {streamOutput && (
+              <span className={styles.streamPanelChars}>
+                {streamOutput.length} chars
+              </span>
+            )}
+          </div>
+          <pre
+            ref={streamOutputRef}
+            className={`${styles.streamPanelOutput} ${!streamOutput ? styles.streamPanelEmpty : ""}`}
+          >
+            {streamOutput || "Ollama is thinking…"}
+            {streamOutput && <span className={styles.streamCursor} />}
+          </pre>
+        </div>
+      )}
+
+      {/* ── Feedback Progress Ledger (Done / Now / Next) ── */}
+      {(() => {
+        const ledger = parseLedger(project?.feedbackLedger);
+        if (!ledger || ledger.items.length === 0) return null;
+        const done = ledger.items.filter((i) => i.status === "done");
+        const now = ledger.items.filter((i) => i.status === "active");
+        const next = ledger.items.filter((i) => i.status === "pending");
+        const failed = ledger.items.filter((i) => i.status === "failed");
+        return (
+          <div className={styles.feedbackPanel}>
+            <div className={styles.feedbackHeader}>
+              <span className={styles.feedbackTitle}>✎ Feedback progress</span>
+            </div>
+            <div style={{ fontSize: "0.85rem", padding: "0.5rem 0.75rem" }}>
+              <div style={{ opacity: 0.75, marginBottom: "0.5rem" }}>
+                Goal: {ledger.goal}
+              </div>
+              {now.length > 0 && (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <strong>Now:</strong>
+                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
+                    {now.map((i) => (
+                      <li key={i.id}>
+                        {i.file ?? "—"}: {i.instruction ?? i.kind}
+                        {i.window
+                          ? ` (L${i.window.startLine}-${i.window.endLine})`
+                          : ""}
+                        {i.attempts > 0 ? ` · attempt ${i.attempts}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {next.length > 0 && (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <strong>Next:</strong>
+                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
+                    {next.map((i) => (
+                      <li key={i.id}>
+                        {i.file ?? "—"}: {i.instruction ?? i.kind}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {done.length > 0 && (
+                <div style={{ marginBottom: "0.5rem" }}>
+                  <strong>Done ({done.length}):</strong>
+                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
+                    {done.map((i) => (
+                      <li key={i.id}>
+                        <div>
+                          ✓ {i.file ?? "—"}: {i.instruction ?? i.kind}
+                          {i.window
+                            ? ` (L${i.window.startLine}-${i.window.endLine})`
+                            : ""}
+                        </div>
+                        {(i.before || i.after) && (
+                          <details style={{ marginTop: "0.15rem" }}>
+                            <summary
+                              style={{ cursor: "pointer", opacity: 0.7 }}
+                            >
+                              diff
+                            </summary>
+                            {i.before && (
+                              <pre
+                                style={{
+                                  margin: "0.25rem 0",
+                                  padding: "0.25rem 0.5rem",
+                                  background: "rgba(255,0,0,0.08)",
+                                  fontSize: "0.75rem",
+                                  whiteSpace: "pre-wrap",
+                                  borderLeft: "2px solid #c33",
+                                }}
+                              >
+                                {i.before}
+                              </pre>
+                            )}
+                            {i.after && (
+                              <pre
+                                style={{
+                                  margin: "0.25rem 0",
+                                  padding: "0.25rem 0.5rem",
+                                  background: "rgba(0,180,0,0.08)",
+                                  fontSize: "0.75rem",
+                                  whiteSpace: "pre-wrap",
+                                  borderLeft: "2px solid #2a7",
+                                }}
+                              >
+                                {i.after}
+                              </pre>
+                            )}
+                          </details>
+                        )}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+              {failed.length > 0 && (
+                <div>
+                  <strong>Failed ({failed.length}):</strong>
+                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
+                    {failed.map((i) => (
+                      <li
+                        key={i.id}
+                        style={{ color: "var(--color-error, #c33)" }}
+                      >
+                        ✗ {i.file ?? "—"}: {i.instruction ?? i.kind}
+                        {i.evidence ? ` — ${i.evidence}` : ""}
+                      </li>
+                    ))}
+                  </ul>
+                </div>
+              )}
+            </div>
+          </div>
+        );
+      })()}
+
       {/* ── Feedback Input Panel ── */}
       {showFeedbackInput && (
         <div className={styles.feedbackPanel}>
@@ -1169,7 +1582,9 @@ export default function ProjectPage() {
                 }}
               />
               <div className={styles.feedbackActions}>
-                <span className={styles.feedbackHint}>Enter to submit · Shift+Enter for new line</span>
+                <span className={styles.feedbackHint}>
+                  Enter to submit · Shift+Enter for new line
+                </span>
                 <button
                   className={styles.feedbackSubmitBtn}
                   onClick={handleSubmitFeedback}
@@ -1350,8 +1765,24 @@ export default function ProjectPage() {
         {/* Task Tree */}
         <div className={styles.taskPanel}>
           <h2 className={styles.taskPanelTitle}>
-            Tasks ({taskList.filter((t) => t.status === "done").length}/
-            {taskList.length})
+            Tasks
+            <span className={styles.taskPanelStats}>
+              <span className={styles.taskStatDone}>
+                {taskList.filter((t) => t.status === "done").length} done
+              </span>
+              {taskList.filter((t) => t.status === "executing").length > 0 && (
+                <span className={styles.taskStatExecuting}>
+                  {taskList.filter((t) => t.status === "executing").length}{" "}
+                  running
+                </span>
+              )}
+              {taskList.filter((t) => t.status === "stuck").length > 0 && (
+                <span className={styles.taskStatStuck}>
+                  {taskList.filter((t) => t.status === "stuck").length} stuck
+                </span>
+              )}
+              <span className={styles.taskStatTotal}>/ {taskList.length}</span>
+            </span>
           </h2>
           {taskList.length === 0 ? (
             <p className={styles.emptyTasks}>
@@ -1367,7 +1798,17 @@ export default function ProjectPage() {
         {/* Log Panel */}
         <div className={styles.logPanel}>
           <div className={styles.logPanelHeader}>
-            <h2 className={styles.logPanelTitle}>Live Log</h2>
+            <div className={styles.logPanelTitleRow}>
+              <h2 className={styles.logPanelTitle}>Live Log</h2>
+              <span className={styles.logCount}>
+                {filteredLogs.length > 0
+                  ? `${filteredLogs.length} entries`
+                  : ""}
+                {effectiveRunning && (
+                  <span className={styles.logLiveIndicator}>● LIVE</span>
+                )}
+              </span>
+            </div>
             {logAgents.length > 1 && (
               <div className={styles.logFilters}>
                 <button
@@ -1401,6 +1842,13 @@ export default function ProjectPage() {
                   className={`${styles.logRow} ${entry.hasRaw ? styles.logClickable : ""}`}
                   onClick={() => entry.hasRaw && toggleLogDetail(entry.id)}
                 >
+                  <span className={styles.logTimestamp}>
+                    {new Date(entry.createdAt).toLocaleTimeString([], {
+                      hour: "2-digit",
+                      minute: "2-digit",
+                      second: "2-digit",
+                    })}
+                  </span>
                   <span
                     className={`${styles.logAgent} ${agentClass[entry.agent] || ""}`}
                   >

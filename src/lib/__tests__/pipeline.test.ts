@@ -77,6 +77,35 @@ vi.mock("@/lib/agents/test-writer", () => ({
   runTestWriter: vi.fn(),
 }));
 
+vi.mock("@/lib/agents/summariser", () => ({
+  runSummariser: vi
+    .fn()
+    .mockResolvedValue({
+      block: null,
+      raw: "",
+      prompt: "",
+      tokens: 0,
+      durationMs: 0,
+    }),
+}));
+
+vi.mock("@/lib/agents/planner", () => ({
+  runPlanner: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/agents/contract-designer", () => ({
+  runContractDesigner: vi.fn().mockResolvedValue(null),
+}));
+
+vi.mock("@/lib/ops/compiler", () => ({
+  checkTypeScriptSyntax: vi.fn().mockReturnValue([]),
+}));
+
+vi.mock("@/lib/deps", () => ({
+  buildWaves: vi.fn((files: string[]) => files.map((f) => [f])),
+  parseImportDeps: vi.fn().mockReturnValue(new Set()),
+}));
+
 vi.mock("@/lib/validate", () => ({
   validateOutput: vi.fn().mockReturnValue({ valid: true, errors: [] }),
   autoRepairOutput: vi.fn(),
@@ -142,9 +171,9 @@ function captureProjectStatusUpdates() {
     if (typeof vals.status === "string") captured.push(vals.status);
     return { where: vi.fn().mockResolvedValue(undefined) };
   };
-  vi.mocked(db.update).mockReturnValue({ set: makeChain } as unknown as ReturnType<
-    typeof db.update
-  >);
+  vi.mocked(db.update).mockReturnValue({
+    set: makeChain,
+  } as unknown as ReturnType<typeof db.update>);
   return captured;
 }
 
@@ -155,9 +184,7 @@ function setupDbDefaults(
   const project = { ...FAKE_PROJECT, ...projectOverride };
 
   vi.mocked(db.query.projects.findFirst).mockResolvedValue(project as never);
-  vi.mocked(db.query.tasks.findMany).mockResolvedValue(
-    existingTasks as never,
-  );
+  vi.mocked(db.query.tasks.findMany).mockResolvedValue(existingTasks as never);
   vi.mocked(db.insert).mockReturnValue({
     values: vi.fn().mockResolvedValue(undefined),
   } as unknown as ReturnType<typeof db.insert>);

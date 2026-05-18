@@ -12,7 +12,9 @@ export type TTMCommand =
   | "QA"
   | "SUMMARY"
   | "EDIT"
-  | "EXECUTE";
+  | "EXECUTE"
+  | "PLAN"
+  | "NEEDS_WIDER_WINDOW";
 
 export interface BreakdownBlock {
   command: "BREAKDOWN";
@@ -60,6 +62,19 @@ export interface ExecuteBlock {
   filePath?: string;
 }
 
+export interface PlanBlock {
+  command: "PLAN";
+  steps: string[];
+}
+
+export interface NeedsWiderWindowBlock {
+  command: "NEEDS_WIDER_WINDOW";
+  filePath?: string;
+  suggestedStartLine?: number;
+  suggestedEndLine?: number;
+  reason: string;
+}
+
 export type TTMBlock =
   | BreakdownBlock
   | ReadyBlock
@@ -67,7 +82,9 @@ export type TTMBlock =
   | QABlock
   | SummaryBlock
   | EditBlock
-  | ExecuteBlock;
+  | ExecuteBlock
+  | PlanBlock
+  | NeedsWiderWindowBlock;
 
 /**
  * Extract the first valid TTM block from an LLM response.
@@ -77,9 +94,14 @@ export type TTMBlock =
 export function parseTTM(raw: string): TTMBlock | null {
   if (!raw || typeof raw !== "string") return null;
 
+  // Strip <think>...</think> blocks emitted by reasoning models (Gemma 4,
+  // Qwen3, DeepSeek-R1, etc.) before the actual structured response.
+  // Use a non-greedy match and the 's' flag so it spans multiple lines.
+  const stripped = raw.replace(/<think>[\s\S]*?<\/think>/gi, "").trim();
+
   // Normalise: the response may have been prefilled with ">>"
   // so the actual content might start with just the command name
-  const text = raw.trim();
+  const text = stripped;
 
   // Try to find a >>COMMAND block (case-insensitive)
   const blockRegex = />>(\w+)\s*\n([\s\S]*?)(?:>>END|$)/i;
@@ -114,9 +136,42 @@ function parseBlock(command: string, body: string): TTMBlock | null {
       return parseEdit(trimmed);
     case "EXECUTE":
       return parseExecute(trimmed);
+    case "PLAN":
+      return parsePlan(trimmed);
+    case "NEEDS_WIDER_WINDOW":
+      return parseNeedsWiderWindow(trimmed);
     default:
       return null;
   }
+}
+
+function parseNeedsWiderWindow(body: string): NeedsWiderWindowBlock | null {
+  const filePath =
+    extractField(body, "filePath") ||
+    extractField(body, "filepath") ||
+    undefined;
+  const startStr =
+    extractField(body, "suggestedStartLine") ||
+    extractField(body, "suggestedstartline");
+  const endStr =
+    extractField(body, "suggestedEndLine") ||
+    extractField(body, "suggestedendline");
+  const reason = extractField(body, "reason") || body.trim();
+
+  const suggestedStartLine = startStr ? parseInt(startStr, 10) : undefined;
+  const suggestedEndLine = endStr ? parseInt(endStr, 10) : undefined;
+
+  return {
+    command: "NEEDS_WIDER_WINDOW",
+    filePath,
+    suggestedStartLine: Number.isFinite(suggestedStartLine)
+      ? suggestedStartLine
+      : undefined,
+    suggestedEndLine: Number.isFinite(suggestedEndLine)
+      ? suggestedEndLine
+      : undefined,
+    reason,
+  };
 }
 
 function parseBreakdown(body: string): BreakdownBlock | null {
@@ -264,6 +319,19 @@ function parseExecute(body: string): ExecuteBlock | null {
     undefined;
   if (!task) return null;
   return { command: "EXECUTE", task, context, filePath };
+}
+
+function parsePlan(body: string): PlanBlock | null {
+  const steps = body
+    .split("\n")
+    .map((l) => l.trim())
+    .filter((l) => l.startsWith("-") || l.startsWith("*") || /^\d+\./.test(l))
+    .map((l) => l.replace(/^[-*]\s*|\d+\.\s*/, "").trim())
+    .filter((l) => l.length > 0)
+    .slice(0, 5);
+
+  if (steps.length === 0) return null;
+  return { command: "PLAN", steps };
 }
 
 // --- Helpers ---

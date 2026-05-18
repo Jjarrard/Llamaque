@@ -74,7 +74,7 @@ export const PIPELINE_STAGES: {
   runStage: string;
 }[] = [
   { key: "architect", label: "Architect", runStage: "architect" },
-  { key: "decompose", label: "Decompose", runStage: "decompose" },
+  { key: "decompose", label: "Plan", runStage: "decompose" },
   { key: "breakdown", label: "Breakdown", runStage: "breakdown" },
   { key: "tdd", label: "TDD", runStage: "tdd" },
   { key: "execute", label: "Execute", runStage: "execute" },
@@ -236,7 +236,12 @@ export function deriveCurrentStatus(
   };
 }
 
-/** Derive per-stage UI state from task list + completed stages + running flag */
+/** Derive per-stage UI state from task list + completed stages + running flag.
+ *
+ * `activeStage` should now be `project.currentStage` — written to the DB by
+ * the pipeline at the start of each stage and cleared when it finishes.
+ * This gives an authoritative, race-free source of truth.
+ */
 export function deriveStageStates(
   taskList: TaskLike[],
   completedStages: string[],
@@ -253,23 +258,27 @@ export function deriveStageStates(
     feedback: "pending",
   };
 
+  // Mark completed stages as done
   for (const s of PIPELINE_STAGES) {
     if (completedStages.includes(s.key)) {
       states[s.key] = "done";
     }
   }
 
-  // Implied completions
+  // Legacy implied completion: decompose can only run after architect.
   if (states.decompose === "done") states.architect = "done";
-  if (states.execute === "done") states.tdd = "done";
 
   if (running) {
     const target = activeStage as StageKey | null;
     if (target && target in states && states[target] !== "done") {
+      // Pipeline explicitly says this stage is active
       states[target] = "active";
     } else {
+      // No currentStage set yet (pipeline just started) or stage just completed
+      // but next hasn't been written yet — mark the first non-done non-feedback
+      // stage so something is always visibly active while running.
       for (const s of PIPELINE_STAGES) {
-        if (states[s.key] !== "done") {
+        if (states[s.key] !== "done" && s.key !== "feedback") {
           states[s.key] = "active";
           break;
         }
@@ -277,6 +286,7 @@ export function deriveStageStates(
     }
   }
 
+  // Approval state: show breakdown awaiting approval
   const hasAwaiting = taskList.some((t) => t.status === "awaiting_approval");
   if (hasAwaiting && states.breakdown !== "done" && !running) {
     states.breakdown = "approval";
