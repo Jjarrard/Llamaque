@@ -15,6 +15,7 @@ import { parseTTM, ResultBlock } from "@/lib/protocol";
 
 const TSX_SYSTEM_PROMPT = `Write tests for a React component using vitest and @testing-library/react.
 Rules:
+- CRITICAL: Your output must begin EXACTLY with the import line below. Do NOT output any React component code, class definitions, or any other code before the imports.
 - Import: import { describe, it, expect } from "vitest"
 - Import: import { render, screen, fireEvent } from "@testing-library/react"
 - Import the component: import Component from "./Component"
@@ -24,7 +25,7 @@ Rules:
   2. key element exists: render then expect(screen.getByRole("button")).toBeTruthy()
   3. interaction works: fireEvent.click(button) then expect the visible output changed
 - Keep each test body under 5 lines
-- Output ONLY code. No comments. No explanations.
+- Output ONLY test code. Do NOT copy or repeat the source component code. No comments. No explanations.
 
 Reply with EXACTLY this format:
 >>RESULT
@@ -86,6 +87,19 @@ output: |
     });
   });
 >>END`;
+
+/**
+ * Strip any component/non-test preamble the model emits before the vitest imports.
+ * Tiny models sometimes copy the injected source code before writing the tests.
+ */
+function cleanTestOutput(code: string): string {
+  // Find where the vitest import begins — strip everything before it
+  const vitestIdx = code.search(/^import\s+[^'"]*from\s+["']vitest["']/m);
+  if (vitestIdx > 0) {
+    return code.slice(vitestIdx).trim();
+  }
+  return code;
+}
 
 export interface TestWriterResult {
   tests: string | null;
@@ -162,7 +176,13 @@ export async function runTestWriter(
 
   if (block && block.command === "RESULT") {
     const result = block as ResultBlock;
-    return { tests: result.output, raw: text, prompt, tokens, durationMs };
+    return {
+      tests: cleanTestOutput(result.output),
+      raw: text,
+      prompt,
+      tokens,
+      durationMs,
+    };
   }
 
   // Fallback: model used >>filename.test.tsx instead of >>RESULT.
@@ -171,7 +191,7 @@ export async function runTestWriter(
     /```(?:tsx?|jsx?|typescript|javascript)?\s*\n([\s\S]+?)```/i,
   );
   if (fenceMatch) {
-    const code = fenceMatch[1].trim();
+    const code = cleanTestOutput(fenceMatch[1].trim());
     if (code.includes("describe(") || code.includes("it(")) {
       return { tests: code, raw: text, prompt, tokens, durationMs };
     }
@@ -184,7 +204,9 @@ export async function runTestWriter(
     afterCommand.length > 50
   ) {
     // Strip trailing >>END if present
-    const code = afterCommand.replace(/\n?>>END\s*$/, "").trim();
+    const code = cleanTestOutput(
+      afterCommand.replace(/\n?>>END\s*$/, "").trim(),
+    );
     return { tests: code, raw: text, prompt, tokens, durationMs };
   }
 
