@@ -38,9 +38,11 @@ import { runImprover } from "@/lib/agents/improver";
 import { runManager } from "@/lib/agents/manager";
 import {
   runDeveloper,
+  runDeveloperPatch,
   getFileTypeRules,
   supportsTDD,
 } from "@/lib/agents/developer";
+import { parsePatch, applyPatch } from "@/lib/patch";
 import { runArchitect, inferDefaultManifest } from "@/lib/agents/architect";
 import {
   runCleaner,
@@ -1519,8 +1521,99 @@ export default function Component() {
       userMessage = this.withCustomInstructions(userMessage);
       this.warnIfPromptTooLarge(`Execute step ${i + 1}`, userMessage);
 
-      // Self-healing loop: try → validate → feed error back → retry
+      // ── PATCH MODE (steps 2..N for code files) ──
+      // Capable models like Gemma 4 will helpfully restructure the whole
+      // file each step if asked for a full rewrite. To prevent drift, try a
+      // surgical SEARCH/REPLACE patch first — emit only the diff.
+      // Falls through to the full-rewrite self-healing loop on any failure.
+      const patchableExts = ["tsx", "jsx", "ts", "js"];
+      const fileExt = filePath.split(".").pop()?.toLowerCase() || "";
+      const canPatch = hasContent && i > 0 && patchableExts.includes(fileExt);
+
       let stepPassed = false;
+
+      if (canPatch && !this.aborted) {
+        const numbered = currentContent
+          .split("\n")
+          .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
+          .join("\n");
+
+        const patchRes = await runDeveloperPatch(
+          this.model,
+          filePath,
+          numbered,
+          req,
+          this.projectName,
+          this.projectDescription,
+        );
+        const blocks = parsePatch(patchRes.raw);
+        if (blocks.length > 0) {
+          const applied = applyPatch(currentContent, blocks);
+          if (applied.ok) {
+            // Validate the patched content with the same checks used below
+            const { repaired: patchRepaired, fixes: patchFixes } =
+              autoRepairOutput(applied.content, filePath);
+            const candidate =
+              patchFixes.length > 0 ? patchRepaired : applied.content;
+            const patchValidation = validateOutput(candidate, filePath, {
+              allowScaffold: true,
+            });
+            const patchSyntax =
+              patchValidation.valid && patchableExts.includes(fileExt)
+                ? checkTypeScriptSyntax(filePath, candidate)
+                : [];
+
+            if (patchValidation.valid && patchSyntax.length === 0) {
+              await this.writeOutputFile(filePath, candidate);
+              stepsCompleted++;
+              await this.log(
+                "DEV",
+                `Step ${i + 1} PATCH (${applied.blocksApplied} block${applied.blocksApplied === 1 ? "" : "s"}, ${patchRes.tokens} tokens, ${patchRes.durationMs}ms)`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+                patchRes.prompt,
+                patchRes.raw,
+              );
+              stepPassed = true;
+            } else {
+              const reason = !patchValidation.valid
+                ? patchValidation.reason
+                : `TS syntax: ${patchSyntax.join("; ")}`;
+              await this.log(
+                "QA",
+                `Step ${i + 1} patch invalid (${reason}) — falling back to full rewrite`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+            }
+          } else {
+            await this.log(
+              "QA",
+              `Step ${i + 1} patch failed to apply: ${applied.reason} — falling back to full rewrite`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+          }
+        } else {
+          await this.log(
+            "QA",
+            `Step ${i + 1} patch: no SEARCH/REPLACE blocks parsed — falling back to full rewrite`,
+            tasksForThisStep[0]?.id || taskGroup[0].id,
+          );
+        }
+      }
+
+      if (stepPassed) {
+        // Patch path succeeded — mark the display task done early so the
+        // UI advances. We still fall through to the per-step task-marking
+        // block below (which sets DB output / completeTask for every task).
+        if (displayTask) {
+          await this.setStatus(displayTask.id, "completed");
+          this.emit("task_completed", {
+            taskId: displayTask.id,
+            agent: "developer",
+          });
+        }
+      }
+
+      // Self-healing loop: try → validate → feed error back → retry
       let stepUserMessage = userMessage;
       let lastGarbageOutput: string | null = null;
 
@@ -1529,6 +1622,7 @@ export default function Component() {
         attempt <= Pipeline.MAX_SELF_HEAL_ATTEMPTS;
         attempt++
       ) {
+        if (stepPassed) break;
         const result = await runDeveloper(
           this.model,
           stepUserMessage,

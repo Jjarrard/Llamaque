@@ -303,3 +303,84 @@ export async function runDeveloper(
 
   return { block: null, raw: text, prompt, tokens, durationMs };
 }
+
+/**
+ * Patch-mode developer: emits Aider-style SEARCH/REPLACE blocks instead of
+ * rewriting the whole file. Used for incremental edits (steps 2..N) where
+ * a capable model would otherwise restructure the entire file each step.
+ *
+ * Returns the raw response text — the caller parses blocks via parsePatch()
+ * and applies them via applyPatch().
+ */
+const PATCH_SYSTEM_PROMPT = `You are a surgical code editor. You will be given the CURRENT file (with line numbers for reference) and ONE feature to add.
+
+Your job: produce the MINIMUM diff to add that feature. Do NOT rewrite the file. Do NOT restructure. Do NOT rename anything that already exists.
+
+Output ONE OR MORE SEARCH/REPLACE blocks. Format EXACTLY:
+
+<<<<<<< SEARCH
+(exact existing lines from the file, verbatim, INCLUDING indentation, with NO line numbers)
+=======
+(replacement lines — same indentation style)
+>>>>>>> REPLACE
+
+Rules:
+- The SEARCH section must be COPIED EXACTLY from the current file. Same whitespace, same indentation, same quotes.
+- Do NOT include the line number prefix (e.g. "  42 | ") in SEARCH or REPLACE — those are only for your reference.
+- SEARCH must be UNIQUE in the file. Include 1-2 lines of surrounding context if a fragment is not unique on its own.
+- Keep each SEARCH small (3-10 lines). Use multiple blocks instead of one giant block.
+- For a brand-new function or import that doesn't replace anything, use an EMPTY SEARCH (just two newlines between the markers) and put the new code in REPLACE — it will be appended.
+- Do NOT include unchanged code that you aren't modifying.
+- Do NOT abbreviate. NEVER write "// ... rest unchanged" or "/* existing code */".
+- Output ONLY the SEARCH/REPLACE blocks. No prose, no explanations, no fenced wrappers.
+
+Example — adding a pause button to a timer component:
+
+<<<<<<< SEARCH
+  const [seconds, setSeconds] = useState(0);
+=======
+  const [seconds, setSeconds] = useState(0);
+  const [isPaused, setIsPaused] = useState(false);
+>>>>>>> REPLACE
+
+<<<<<<< SEARCH
+      <button onClick={handleStart}>Start</button>
+    </div>
+=======
+      <button onClick={handleStart}>Start</button>
+      <button onClick={() => setIsPaused(p => !p)}>{isPaused ? "Resume" : "Pause"}</button>
+    </div>
+>>>>>>> REPLACE`;
+
+export async function runDeveloperPatch(
+  model: string,
+  filePath: string,
+  numberedFile: string,
+  featureInstruction: string,
+  projectName: string,
+  projectDescription: string,
+): Promise<{
+  raw: string;
+  prompt: string;
+  tokens: number;
+  durationMs: number;
+}> {
+  const userMessage = `Project: ${projectName} — ${projectDescription}
+
+CURRENT ${filePath} (line numbers are FOR YOUR REFERENCE ONLY — do not include them in SEARCH/REPLACE):
+${numberedFile}
+
+ADD this feature with the MINIMUM diff. Do NOT rewrite the file. Do NOT rename existing variables or handlers:
+- ${featureInstruction}
+
+Reply with one or more SEARCH/REPLACE blocks. Nothing else.`;
+
+  const { text, prompt, tokens, durationMs } = await callOllama(
+    model,
+    "developer",
+    PATCH_SYSTEM_PROMPT,
+    userMessage,
+  );
+
+  return { raw: text, prompt, tokens, durationMs };
+}
