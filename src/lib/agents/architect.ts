@@ -18,9 +18,14 @@ Order files by dependency (leaf files with no imports first, root file last).
 CRITICAL: Only include files needed for features explicitly described. Do NOT add extra features, pages, or functionality not mentioned.
 
 Guidelines:
-- For simple apps or components: 1-3 files max
+- For a React UI app (any interactive single-page tool): 1-2 files MAXIMUM.
+  - ONE main component file (App.tsx or descriptive name like Timer.tsx) that contains ALL the UI and logic.
+  - Only add a second file if the spec explicitly describes a reusable component that appears in multiple places.
+  - Do NOT create separate service classes, manager classes, or helper .ts files for a React UI task.
+  - Do NOT create a Python file for a React/browser task.
+  - Do NOT create settings.json, config files, or data files unless the spec explicitly asks for persistent settings.
 - For documentation/analysis tasks: 1-2 markdown files
-- For multi-file projects: up to 8 files, ordered by dependency
+- For multi-file backend/CLI projects: up to 5 files, ordered by dependency
 - Use standard file extensions (.tsx, .py, .md, .json, .ts, .css, .html, etc.)
 - Keep paths flat (no deep nesting) unless the project specifically needs it
 - A React component = one Component.tsx file (type: code, language: typescript)
@@ -61,8 +66,53 @@ export async function runArchitect(
   );
 
   const manifest = parseManifest(text);
+  const sanitised = sanitiseManifest(manifest);
 
-  return { manifest, raw: text, prompt, tokens, durationMs };
+  return { manifest: sanitised, raw: text, prompt, tokens, durationMs };
+}
+
+/**
+ * Post-LLM guardrails: strip files that are clearly wrong for the manifest type.
+ *
+ * Rules applied when a React/TSX project is detected:
+ * - Max 3 files total (model loves generating unnecessary service classes)
+ * - Drop .py, .html, .htm files (Python/HTML have no place in a TSX project)
+ * - Drop "service", "manager", "player", "factory" .ts files — these are
+ *   hallucinated OOP wrappers; all logic should live in the TSX component
+ * - Keep the first TSX file, any remaining TSX, and at most one utility .ts
+ */
+function sanitiseManifest(files: ManifestFile[]): ManifestFile[] {
+  const hasTsx = files.some((f) => /\.(tsx|jsx)$/i.test(f.path));
+  if (!hasTsx) return files; // Non-React manifests are fine as-is
+
+  // Drop files that never belong in a React UI project
+  const SERVICE_PATTERN =
+    /(?:service|manager|player|factory|provider|store|slice)\.ts$/i;
+  const WRONG_LANG = /\.(py|html?|htm)$/i;
+
+  let kept = files.filter((f) => {
+    if (WRONG_LANG.test(f.path)) return false;
+    if (SERVICE_PATTERN.test(f.path)) return false;
+    return true;
+  });
+
+  // Hard cap: keep at most 3 files for React UI tasks
+  if (kept.length > 3) {
+    // Always keep TSX files first, then TS utilities
+    const tsx = kept.filter((f) => /\.(tsx|jsx)$/i.test(f.path));
+    const ts = kept.filter((f) => /\.ts$/i.test(f.path));
+    const rest = kept.filter((f) => !/\.(tsx|jsx|ts)$/i.test(f.path));
+    kept = [...tsx, ...ts, ...rest].slice(0, 3);
+  }
+
+  // Fallback: if we stripped everything, keep the original first tsx file
+  if (kept.length === 0) {
+    const firstTsx = files.find((f) => /\.(tsx|jsx)$/i.test(f.path));
+    if (firstTsx) return [firstTsx];
+    return files.slice(0, 1);
+  }
+
+  return kept;
 }
 
 /**

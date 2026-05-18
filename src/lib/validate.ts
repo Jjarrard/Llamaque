@@ -659,7 +659,9 @@ export function validateOutput(
     // body but `const [, setFoo] = useState` (or equivalent) is absent.
     // This catches the runtime-crash pattern where a parent calls a child's state
     // setter that was never declared in the parent.
-    if (isJsx) {
+    // NOTE: skip this on intermediate steps (allowScaffold=true) because the file
+    // is being built incrementally — state declarations may arrive in a later step.
+    if (isJsx && !options?.allowScaffold) {
       // Browser-native functions that start with "set" but are NOT React state setters.
       // These must be excluded from the useState scoping check.
       const BROWSER_SET_GLOBALS = new Set([

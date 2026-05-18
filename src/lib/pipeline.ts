@@ -3056,10 +3056,18 @@ output: |
         }
       }
 
-      // Detect placeholder handlers: alert() or console.log() as main action
+      // Detect placeholder handlers: alert() or console.log() as main action.
+      // BUT: skip this check if the project description literally asks for an
+      // alert/alarm/notification — for things like timers, alert("Done!") is
+      // a legitimate implementation, not a placeholder.
+      const descLower = (this.projectDescription || "").toLowerCase();
+      const alertIsRequested =
+        /\b(alert|alarm|notify|notification|beep|chime|sound)\b/.test(
+          descLower,
+        );
       const alertPlaceholders =
         content.match(/alert\s*\(\s*["'`][^"'`]*["'`]\s*\)/g) || [];
-      if (alertPlaceholders.length > 0) {
+      if (alertPlaceholders.length > 0 && !alertIsRequested) {
         issues.push({
           file: filePath,
           issue: `Found ${alertPlaceholders.length} alert() placeholder(s) — replace with real logic`,

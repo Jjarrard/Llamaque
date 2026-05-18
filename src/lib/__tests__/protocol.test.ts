@@ -152,3 +152,51 @@ some content
     expect(parseTTM("")).toBeNull();
   });
 });
+
+// ─── Fenced code block fallback (tiny-model friendly) ─────────────────────────
+
+describe("parseTTM — fenced code block fallback", () => {
+  it("treats a bare fenced TSX block as a RESULT", () => {
+    const raw = [
+      "```tsx",
+      "import React, { useState } from 'react';",
+      "export default function App() { return <div>hi</div>; }",
+      "```",
+    ].join("\n");
+    const block = parseTTM(raw);
+    expect(block).not.toBeNull();
+    expect(block!.command).toBe("RESULT");
+    const result = block as { command: "RESULT"; output: string };
+    expect(result.output).toContain("export default function App");
+    expect(result.output).not.toContain("```");
+  });
+
+  it("treats a bare fenced code block with no language tag as a RESULT", () => {
+    const raw = "```\nconst x = 1;\nexport { x };\n```";
+    const block = parseTTM(raw);
+    expect(block).not.toBeNull();
+    expect(block!.command).toBe("RESULT");
+  });
+
+  it("strips fenced code wrapper inside a RESULT output field", () => {
+    const raw = `>>RESULT
+status: DONE
+filePath: App.tsx
+output: |
+  \`\`\`tsx
+  export default function App() { return <div />; }
+  \`\`\`
+>>END`;
+    const block = parseTTM(raw);
+    expect(block).not.toBeNull();
+    expect(block!.command).toBe("RESULT");
+    const result = block as { command: "RESULT"; output: string };
+    expect(result.output).not.toContain("```");
+    expect(result.output).toContain("export default function App");
+  });
+
+  it("does not return a fenced result for very short content", () => {
+    const raw = "```\nx\n```";
+    expect(parseTTM(raw)).toBeNull();
+  });
+});

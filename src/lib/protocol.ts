@@ -90,6 +90,9 @@ export type TTMBlock =
  * Extract the first valid TTM block from an LLM response.
  * Case-insensitive. Handles missing >>END (uses end of string).
  * Ignores everything outside the block.
+ *
+ * Tiny-model fallback: if no TTM block is found, attempts to extract a
+ * fenced code block (```lang ... ```) and treats it as a RESULT block.
  */
 export function parseTTM(raw: string): TTMBlock | null {
   if (!raw || typeof raw !== "string") return null;
@@ -107,15 +110,49 @@ export function parseTTM(raw: string): TTMBlock | null {
   const blockRegex = />>(\w+)\s*\n([\s\S]*?)(?:>>END|$)/i;
   const match = text.match(blockRegex);
 
-  if (!match) {
+  if (match) {
+    const block = parseBlock(match[1].toUpperCase() as TTMCommand, match[2]);
+    if (block) return block;
+  } else {
     // Try without >> prefix (in case prefill already consumed it)
     const noPrefixRegex = /^(\w+)\s*\n([\s\S]*?)(?:>>END|$)/i;
     const altMatch = text.match(noPrefixRegex);
-    if (!altMatch) return null;
-    return parseBlock(altMatch[1].toUpperCase() as TTMCommand, altMatch[2]);
+    if (altMatch) {
+      const block = parseBlock(
+        altMatch[1].toUpperCase() as TTMCommand,
+        altMatch[2],
+      );
+      if (block) return block;
+    }
   }
 
-  return parseBlock(match[1].toUpperCase() as TTMCommand, match[2]);
+  // Tiny-model fallback: try to extract a fenced code block as a RESULT.
+  // Tiny models (1.5B-3B) emit ```tsx ... ``` far more reliably than
+  // TTM-YAML, so we accept that format too.
+  return parseFencedCodeAsResult(text);
+}
+
+/**
+ * Parse a fenced code block (```lang ... ```) and return it as a RESULT block.
+ * This is the tiny-model-friendly fallback when the structured TTM protocol fails.
+ */
+function parseFencedCodeAsResult(text: string): ResultBlock | null {
+  // Match ```lang? \n ... \n ```  — greedy enough to handle code with backticks inside
+  const fenceMatch = text.match(/```(?:[\w+-]+)?\s*\n([\s\S]*?)\n```/);
+  if (!fenceMatch) return null;
+
+  const output = fenceMatch[1].trim();
+  if (!output) return null;
+
+  // Reject obvious non-code: very short, or starts with a sentence-ish phrase.
+  if (output.length < 10) return null;
+
+  return {
+    command: "RESULT",
+    status: "DONE",
+    filePath: undefined,
+    output,
+  };
 }
 
 function parseBlock(command: string, body: string): TTMBlock | null {
@@ -264,12 +301,29 @@ function parseResult(body: string): ResultBlock | null {
   }
 
   if (!output) return null;
+
+  // Strip fenced code block wrappers from output content. Tiny models often
+  // wrap their code in ```tsx ... ``` even inside a YAML block scalar, which
+  // breaks the downstream code (Babel sees backticks as syntax).
+  output = stripFencedCodeWrapper(output);
+
   return {
     command: "RESULT",
     status,
     filePath: filePath || undefined,
     output,
   };
+}
+
+/**
+ * If `text` is wrapped in a fenced code block (```lang ... ```), return the
+ * inner content. Otherwise return the input unchanged.
+ */
+function stripFencedCodeWrapper(text: string): string {
+  const trimmed = text.trim();
+  const match = trimmed.match(/^```(?:[\w+-]+)?\s*\n([\s\S]*?)\n```\s*$/);
+  if (match) return match[1].trim();
+  return text;
 }
 
 function parseQA(body: string): QABlock | null {

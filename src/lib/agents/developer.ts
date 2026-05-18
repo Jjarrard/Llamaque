@@ -17,34 +17,52 @@ function getSystemPrompt(filePath: string): string {
   switch (ext) {
     case "tsx":
     case "jsx":
-      return `Write a complete, working React component. Rules:
-- export default function ComponentName()
-- Inline styles ONLY: style={{ }}
-- React hooks for state (useState, useEffect, useRef)
-- Must return JSX
-- ALL event handlers must do something real. NEVER use alert() or console.log() as the main action.
-- ALL inputs must be controlled: value={state} + onChange={handler}
-- State must stay in sync. If you add items to an array, update ALL related arrays too.
-- KEEP IT SIMPLE: for synchronous state updates (counters, toggles, form fields), update state DIRECTLY in the handler — no fake async delays, no loading spinners, no success toasts.
-- For TIMERS and real time-based behavior: use useEffect + setInterval/setTimeout + useRef to store the interval ID. Example: const intervalRef = useRef<ReturnType<typeof setInterval> | null>(null); then inside useEffect start/clear the interval.
-- Do NOT use class-based services, managers, or singletons inside a React component file. Use hooks instead.
-- Do NOT invent features not mentioned in the requirements: no fetch() calls unless the spec asks for them.
-- Do NOT create sub-components for simple interactive elements. Buttons, inputs, and small display elements belong inline in the main component. Only extract a named function component when it is reused in multiple places or is genuinely complex.
-- If the prompt lists "FILES YOU MUST IMPORT FROM", you MUST import those components at the top of your file and use them — do NOT reimplement their logic inline.
-- Every useState call must be inside the component that uses it. Do NOT call a setState function if the matching useState is not in the same component.
-- Only import from: "react", "react-dom", and "./siblingFile" paths. Do NOT import from npm packages that are not react or react-dom.
-- Output ONLY code. No comments in code. No explanations before or after code.
+      return `You are filling in a React component scaffold. Replace every TODO comment with working code. Keep the rest of the structure.
 
-Reply:
+Scaffold to fill in:
+\`\`\`tsx
+import React, { useState } from "react";
+
+export default function Component() {
+  // TODO: declare useState hooks for every piece of state mentioned in the requirements
+  // TODO: declare any derived values (e.g. computed totals)
+  // TODO: declare event handler functions that update state
+
+  return (
+    <div style={{ padding: 24, fontFamily: "system-ui, sans-serif" }}>
+      {/* TODO: render inputs (controlled: value + onChange) */}
+      {/* TODO: render buttons that call the event handlers */}
+      {/* TODO: render the live output / results */}
+    </div>
+  );
+}
+\`\`\`
+
+Hard rules:
+- Replace the component name "Component" with one that matches the task.
+- Inline styles ONLY: style={{ }}. No CSS imports.
+- ALL inputs MUST be controlled: value={state} + onChange={handler}.
+- Every event handler must do real work. NEVER use alert() or console.log() as the main action.
+- For TIMERS / real time-based behavior: use useEffect + setInterval/setTimeout + useRef to hold the interval ID. Cleanup in the useEffect return.
+- Every useState call MUST be inside the component that uses it.
+- Do NOT use class-based services, managers, or singletons.
+- Do NOT invent features not mentioned in the requirements (no loading spinners, no fetch calls, no toasts unless asked).
+- Only import from "react", "react-dom", or sibling files ("./Foo"). No npm packages.
+- Output ONLY code. No prose.
+
+Reply with EITHER format (both are accepted):
+
+Format A (preferred for code-only output):
+\`\`\`tsx
+(complete component code, no TODOs left)
+\`\`\`
+
+Format B (TTM block):
 >>RESULT
 status: DONE
 filePath: ${filePath}
 output: |
-  import React, { useState } from "react";
-
-  export default function Component() {
-    return <div>...</div>;
-  }
+  (complete component code, no TODOs left)
 >>END`;
 
     case "ts":
