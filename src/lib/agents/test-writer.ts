@@ -16,7 +16,7 @@ import { parseTTM, ResultBlock } from "@/lib/protocol";
 const TSX_SYSTEM_PROMPT = `Write tests for a React component using vitest and @testing-library/react.
 Rules:
 - CRITICAL: Your output must begin EXACTLY with the import line below. Do NOT output any React component code, class definitions, or any other code before the imports.
-- Import: import { describe, it, expect } from "vitest"
+- Import: import { describe, it, expect, vi } from "vitest"
 - Import: import { render, screen, fireEvent } from "@testing-library/react"
 - Import the component: import Component from "./Component"
 - Use ONLY plain vitest assertions: expect(x).toBeTruthy(), expect(x).toBe(y) — do NOT use toBeInTheDocument or any jest-dom matcher
@@ -33,7 +33,7 @@ Reply with EXACTLY this format:
 status: DONE
 filePath: Component.test.tsx
 output: |
-  import { describe, it, expect } from "vitest";
+  import { describe, it, expect, vi } from "vitest";
   import { render, screen, fireEvent } from "@testing-library/react";
   import Component from "./Component";
 
@@ -154,20 +154,24 @@ export async function runTestWriter(
   const ext = targetFile?.split(".").pop()?.toLowerCase() || "tsx";
   const isReact = ext === "tsx" || ext === "jsx";
 
-  // Use the real export name if known; fall back to "Component"
-  const componentName = exportName || "Component";
   // Derive test file name from target
   const baseName = (targetFile || "Component").replace(/\.\w+$/, "");
+  // Use the real export name if known; fall back to the filename-derived name
+  // (e.g. "HabitItem" from "HabitItem.tsx") so the import path is always valid.
+  // Never fall back to the generic "Component" string — that file doesn't exist.
+  const componentName = exportName || baseName;
   const testExt = isReact ? "tsx" : ext;
   const testFileName = `${baseName}.test.${testExt}`;
 
-  // Personalise the TSX system prompt: replace ALL "Component" placeholder
-  // occurrences with the real export name (import line, JSX tags, describe block, etc.)
+  // Personalise the TSX system prompt: replace placeholders in a specific order
+  // so the import *path* always uses the filename (baseName) and the JSX identifier
+  // and describe-block names use the real export name (componentName).
+  // Order matters: fix paths first, then test filename, then bare identifiers.
   const tsxPrompt = isReact
-    ? TSX_SYSTEM_PROMPT.replace(/\bComponent\b/g, componentName).replace(
-        /Component\.test\.tsx/g,
-        testFileName,
-      )
+    ? TSX_SYSTEM_PROMPT
+        .replace(/"\.\/Component"/g, `"./${baseName}"`)   // import path → filename
+        .replace(/Component\.test\.tsx/g, testFileName)  // test filename
+        .replace(/\bComponent\b/g, componentName)         // JSX tags / describe name
     : JS_SYSTEM_PROMPT.replace(/__MODULE__/g, baseName);
 
   let userMessage = `Project: "${projectName}" — ${projectDescription}\n\n`;
