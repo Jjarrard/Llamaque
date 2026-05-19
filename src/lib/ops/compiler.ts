@@ -57,8 +57,25 @@ export function checkTypeScriptSyntax(
     );
 
     const diagnostics = program.getSyntacticDiagnostics(sourceFile);
-    return diagnostics
+    const syntaxErrors = diagnostics
       .slice(0, 3) // cap: keep feedback short for small models
+      .map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
+
+    if (syntaxErrors.length > 0) return syntaxErrors;
+
+    // Also run a filtered set of semantic diagnostics. We skip most type
+    // errors (they fire on isolated files because imports are unresolved) but
+    // keep codes that are definitively wrong regardless of context:
+    //   TS2448 — block-scoped variable used before declaration (let x = x;)
+    //   TS2454 — variable used before being assigned
+    //   TS2300 — duplicate identifier
+    //   TS2695 — LHS is always a constant (often `let x = x` shadow)
+    const SAFE_SEMANTIC_CODES = new Set([2448, 2454, 2300, 2695, 2393]);
+    const semanticDiags = program
+      .getSemanticDiagnostics(sourceFile)
+      .filter((d) => SAFE_SEMANTIC_CODES.has(d.code));
+    return semanticDiags
+      .slice(0, 3)
       .map((d) => ts.flattenDiagnosticMessageText(d.messageText, " "));
   } catch {
     // Never block the pipeline on an unexpected TS API failure

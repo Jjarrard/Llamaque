@@ -3824,6 +3824,21 @@ output: |
     // Content-hash history per file. If applying a fix would restore the file
     // to a previously-seen state (oscillation), the fix is rejected.
     const fileContentHashes = new Map<string, Set<string>>();
+    const qaOutDir = this.outputDir();
+
+    /** Run tests for the given source file (if a test file exists).
+     *  Returns true if tests pass (or no test file), false if they regress. */
+    const qaRunTests = (srcFile: string): boolean => {
+      const ext = srcFile.split(".").pop()?.toLowerCase() || "";
+      const testFile = srcFile.replace(
+        /\.\w+$/,
+        `.test.${ext === "tsx" || ext === "jsx" ? "tsx" : ext}`,
+      );
+      if (!fs.existsSync(path.join(qaOutDir, testFile))) return true;
+      const result = runTests(this.projectId, testFile);
+      return !result.crashed && result.failed === 0;
+    };
+
     let round = 0;
 
     while (round < Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
@@ -3985,17 +4000,32 @@ output: |
             seenHashes.add(fp(existingContent));
             fileContentHashes.set(resolvedFile, seenHashes);
             await this.writeOutputFile(resolvedFile, editRepaired);
-            await this.log(
-              "QA",
-              `Round ${round}: Surgical fix in ${resolvedFile} lines ${editResult.block.startLine}–${editResult.block.endLine} (${editResult.tokens} tokens)`,
-              undefined,
-              editResult.prompt,
-              editResult.raw,
-            );
-            previousFixes.push(
-              `${problem} → APPLIED: ${fix} (surgically in ${resolvedFile})`,
-            );
-            fixed = true;
+            // Regression guard: if tests were passing before the fix, make sure
+            // they still pass. If they broke, revert and treat as a failed fix.
+            if (!qaRunTests(resolvedFile)) {
+              await this.writeOutputFile(resolvedFile, existingContent);
+              await this.log(
+                "QA",
+                `Round ${round}: Surgical fix in ${resolvedFile} broke tests — reverting`,
+              );
+              fileFailCount.set(
+                resolvedFile,
+                (fileFailCount.get(resolvedFile) ?? 0) + 1,
+              );
+              previousFixes.push(`${problem} (fix reverted — broke tests)`);
+            } else {
+              await this.log(
+                "QA",
+                `Round ${round}: Surgical fix in ${resolvedFile} lines ${editResult.block.startLine}–${editResult.block.endLine} (${editResult.tokens} tokens)`,
+                undefined,
+                editResult.prompt,
+                editResult.raw,
+              );
+              previousFixes.push(
+                `${problem} → APPLIED: ${fix} (surgically in ${resolvedFile})`,
+              );
+              fixed = true;
+            }
           }
         } else {
           const reason = !editValidation.valid
@@ -4056,16 +4086,30 @@ output: |
             seenHashesFull.add(fp(existingContent));
             fileContentHashes.set(resolvedFile, seenHashesFull);
             await this.writeOutputFile(resolvedFile, repaired);
-            await this.log(
-              "QA",
-              `Round ${round}: Fixed ${resolvedFile} (${devResult.tokens} tokens)`,
-              undefined,
-              devResult.prompt,
-              devResult.raw,
-            );
-            previousFixes.push(
-              `${problem} → APPLIED: ${fix} (full rewrite in ${resolvedFile})`,
-            );
+            // Regression guard: revert if tests broke after the fix.
+            if (!qaRunTests(resolvedFile)) {
+              await this.writeOutputFile(resolvedFile, existingContent);
+              await this.log(
+                "QA",
+                `Round ${round}: Full rewrite of ${resolvedFile} broke tests — reverting`,
+              );
+              fileFailCount.set(
+                resolvedFile,
+                (fileFailCount.get(resolvedFile) ?? 0) + 1,
+              );
+              previousFixes.push(`${problem} (fix reverted — broke tests)`);
+            } else {
+              await this.log(
+                "QA",
+                `Round ${round}: Fixed ${resolvedFile} (${devResult.tokens} tokens)`,
+                undefined,
+                devResult.prompt,
+                devResult.raw,
+              );
+              previousFixes.push(
+                `${problem} → APPLIED: ${fix} (full rewrite in ${resolvedFile})`,
+              );
+            }
           }
         } else {
           const reason = !validation.valid

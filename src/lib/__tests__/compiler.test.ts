@@ -126,6 +126,43 @@ export function e( {`;
   });
 });
 
+// ─── Semantic errors (safe subset) ───────────────────────────────────────────
+
+describe("checkTypeScriptSyntax — semantic errors", () => {
+  it("catches parameter shadow (let x = x) — TS2300 duplicate identifier", () => {
+    // This is the QA-introduced bug pattern: LLM declares `let param = param`
+    // inside a function, creating a temporal-dead-zone ReferenceError at runtime.
+    const code = `
+const handleToggle = (id: string, newIsCompleted: boolean) => {
+  let newIsCompleted = newIsCompleted;
+  return newIsCompleted;
+};`;
+    const errors = checkTypeScriptSyntax("App.tsx", code);
+    expect(errors.length).toBeGreaterThan(0);
+    expect(errors.join(" ")).toMatch(/duplicate identifier/i);
+  });
+
+  it("catches duplicate function declaration — TS2300", () => {
+    const code = `
+function foo(x: number): number { return x; }
+function foo(x: number): number { return x + 1; }`;
+    const errors = checkTypeScriptSyntax("util.ts", code);
+    expect(errors.length).toBeGreaterThan(0);
+  });
+
+  it("does NOT flag missing imports (unresolved names are expected in isolation)", () => {
+    // useState is not imported — but we should NOT flag TS2304 (cannot find name)
+    // because on isolated files this is always a false positive.
+    const code = `
+export default function App() {
+  const [count, setCount] = useState(0);
+  return count;
+}`;
+    const errors = checkTypeScriptSyntax("App.tsx", code);
+    expect(errors).toEqual([]);
+  });
+});
+
 // ─── JSX files ────────────────────────────────────────────────────────────────
 
 describe("checkTypeScriptSyntax — .jsx files", () => {
