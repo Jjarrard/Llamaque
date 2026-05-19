@@ -3615,7 +3615,7 @@ output: |
       if (!existingContent || existingContent.trim().length < 20) continue;
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${filePath}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
+      userMessage += `Current ${filePath}:\n${existingContent}\n\n`;
       userMessage += `A quality review found these issues:\n`;
       userMessage += fileIssues.map((iss, i) => `${i + 1}. ${iss}`).join("\n");
       userMessage += `\n\nFix ALL of these issues and rewrite the COMPLETE ${filePath} file. Keep all working functionality intact.`;
@@ -3892,7 +3892,7 @@ output: |
 
       // ── Attempt 2: Full-file rewrite fallback ──
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${resolvedFile}:\n${this.truncateForPrompt(existingContent, 100)}\n\n`;
+      userMessage += `Current ${resolvedFile}:\n${existingContent}\n\n`;
       userMessage += `QA found this issue:\nProblem: ${problem}\nFix: ${fix}\n\n`;
       userMessage += `Apply ONLY this fix. Keep everything else exactly the same. Rewrite the COMPLETE ${resolvedFile} file.`;
 
