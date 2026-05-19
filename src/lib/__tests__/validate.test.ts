@@ -173,4 +173,31 @@ export default function Component() {
     expect(result.valid).toBe(false);
     expect(result.reason).toMatch(/setCount/);
   });
+
+  it("accepts dataTransfer.setData() (HTML5 drag-and-drop, not a React setter)", () => {
+    const dragCode = `
+import React, { useState } from "react";
+export default function Board() {
+  const [items, setItems] = useState<string[]>([]);
+  const onDragStart = (e: React.DragEvent, id: string) => {
+    e.dataTransfer.setData("cardId", id);
+    e.dataTransfer.setData("sourceColumn", "todo");
+  };
+  return <div draggable onDragStart={(e) => onDragStart(e, "1")}>{items.length}</div>;
+}`.trim();
+    expect(validateOutput(dragCode, "Board.tsx").valid).toBe(true);
+  });
+
+  it("accepts localStorage.setItem and element.setAttribute (DOM APIs)", () => {
+    const domCode = `
+import React, { useEffect } from "react";
+export default function Persist() {
+  useEffect(() => {
+    localStorage.setItem("key", "value");
+    document.body.setAttribute("data-ready", "true");
+  }, []);
+  return <div />;
+}`.trim();
+    expect(validateOutput(domCode, "Persist.tsx").valid).toBe(true);
+  });
 });

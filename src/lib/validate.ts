@@ -687,11 +687,17 @@ export function validateOutput(
         "setMilliseconds",
       ]);
 
-      // Collect every `setXxx(` call in the file
-      const setterCalls = trimmed.match(/\bset([A-Z][a-zA-Z0-9]*)\s*\(/g) ?? [];
-      for (const call of setterCalls) {
-        // Extract the setter name e.g. "setCount" from "setCount("
-        const setterName = call.replace(/\s*\($/, "");
+      // Collect every `setXxx(` call in the file. Exclude method calls
+      // (anything preceded by `.` or `?.`) so DOM/browser setters like
+      // `dataTransfer.setData()`, `localStorage.setItem()`, `element.setAttribute()`
+      // are not misread as undeclared React state setters.
+      const setterCalls =
+        trimmed.match(/(^|[^.\w?])set([A-Z][a-zA-Z0-9]*)\s*\(/g) ?? [];
+      for (const callMatch of setterCalls) {
+        // Extract the setter name e.g. "setCount" from "(set|^)setCount("
+        const nameMatch = callMatch.match(/set[A-Z][a-zA-Z0-9]*/);
+        if (!nameMatch) continue;
+        const setterName = nameMatch[0];
         // Skip known browser globals
         if (BROWSER_SET_GLOBALS.has(setterName)) continue;
         // Build the matching useState pattern: const [anything, setFoo] = useState

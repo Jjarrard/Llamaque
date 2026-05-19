@@ -44,6 +44,7 @@ import {
 } from "@/lib/agents/developer";
 import { parsePatch, applyPatch } from "@/lib/patch";
 import { runArchitect, inferDefaultManifest } from "@/lib/agents/architect";
+import { assignFileForTask } from "@/lib/file-assignment";
 import {
   runCleaner,
   runMinimalRetry,
@@ -67,7 +68,11 @@ import { runSummariser } from "@/lib/agents/summariser";
 import { runPlanner } from "@/lib/agents/planner";
 import { runFeedbackPlanner } from "@/lib/agents/feedback-planner";
 import { runContractDesigner } from "@/lib/agents/contract-designer";
-import { checkTypeScriptSyntax } from "@/lib/ops/compiler";
+import {
+  checkTypeScriptSyntax,
+  checkTypeScriptSemantics,
+  extractExportSignatures,
+} from "@/lib/ops/compiler";
 import { validateOutput, autoRepairOutput } from "@/lib/validate";
 import { locateWindows, hashString, LocateCandidate } from "@/lib/locator";
 import {
@@ -136,6 +141,9 @@ export class Pipeline {
   private projectDescription: string = "";
   private customInstructions: string = "";
   private deterministicDraftByFile: Record<string, string> = {};
+  /** Round-robin cursor for resolveFilePath ties — prevents all features
+   * landing on manifest[0] when keyword overlap is ambiguous. */
+  private assignmentCursor: number = 0;
   /** Dynamic file manifest — set by Architect agent or inferred from description */
   private manifest: ManifestFile[] = [];
   /** Shared TypeScript type definitions produced by ContractDesigner (may be empty) */
@@ -421,35 +429,21 @@ export default function Component() {
 
   /**
    * Map a task's filePath/description to one of the manifest files.
-   * Falls back to the first manifest file if no match is found.
+   * Delegates to the pure {@link assignFileForTask} helper and threads the
+   * round-robin cursor through Pipeline state. See file-assignment.ts.
    */
   private resolveFilePath(
     filePath: string | null,
     description: string,
   ): string {
-    if (this.manifest.length === 0) return "output.txt";
-    if (this.manifest.length === 1) return this.manifest[0].path;
-
-    // If a specific path was set and it's in our manifest, use it
-    if (filePath) {
-      const match = this.manifest.find(
-        (f) => f.path.toLowerCase() === filePath.toLowerCase(),
-      );
-      if (match) return match.path;
-    }
-
-    // Try to match description keywords to manifest file descriptions
-    const descLower = description.toLowerCase();
-    for (const file of this.manifest) {
-      const keywords = file.description.toLowerCase().split(/\s+/);
-      const matchCount = keywords.filter(
-        (k) => k.length > 3 && descLower.includes(k),
-      ).length;
-      if (matchCount >= 2) return file.path;
-    }
-
-    // Default to first file in manifest
-    return this.manifest[0].path;
+    const { path, cursor } = assignFileForTask(
+      this.manifest,
+      filePath,
+      description,
+      this.assignmentCursor,
+    );
+    this.assignmentCursor = cursor;
+    return path;
   }
 
   // ─────────────────────────────────────────────
@@ -928,13 +922,20 @@ export default function Component() {
 
     await this.log("MGR", `Breaking down epic: ${task.description}`, task.id);
 
-    let result = await runManager(
-      this.model,
-      task.description,
-      this.withCustomInstructions(
-        `Project: ${this.projectName} — ${this.projectDescription}`,
-      ),
+    // Build the file-manifest context so Manager scopes each task title to
+    // a specific file via [FileName.ext] prefix. Without this the manager
+    // generates list-level features (e.g. "implement card addition") that
+    // the keyword router mis-targets at single-item files (e.g. Card.tsx).
+    const manifestBlock =
+      this.manifest.length > 0
+        ? "\nFILES (each task MUST start with [FileName.ext] choosing the best fit):\n" +
+          this.manifest.map((f) => `- [${f.path}] ${f.description}`).join("\n")
+        : "";
+    const baseContext = this.withCustomInstructions(
+      `Project: ${this.projectName} — ${this.projectDescription}${manifestBlock}`,
     );
+
+    let result = await runManager(this.model, task.description, baseContext);
 
     if (!result.block && task.parseRetryCount < MAX_PARSE_RETRIES) {
       await db
@@ -942,11 +943,7 @@ export default function Component() {
         .set({ parseRetryCount: task.parseRetryCount + 1 })
         .where(eq(tasks.id, task.id));
       await this.log("MGR", "Parse failure, retrying...", task.id);
-      result = await runManager(
-        this.model,
-        task.description,
-        `Project: ${this.projectName} — ${this.projectDescription}`,
-      );
+      result = await runManager(this.model, task.description, baseContext);
     }
 
     if (!result.block) {
@@ -966,7 +963,7 @@ export default function Component() {
       result = await runManager(
         this.model,
         `${task.description}\nThis is a high-level epic. You MUST break it into 2-3 smaller, specific tasks. Each task should describe a concrete piece of work to produce or implement. Reply with >>BREAKDOWN only.`,
-        `Project: ${this.projectName} — ${this.projectDescription}`,
+        baseContext,
       );
       if (!result.block || result.block.command !== "BREAKDOWN") {
         await this.markStuck(task.id, "Manager refused to break down epic");
@@ -995,7 +992,7 @@ export default function Component() {
         const retryResult = await runManager(
           this.model,
           `${task.description}\nIMPORTANT: Break into DIFFERENT, SPECIFIC steps. Each must be a concrete piece of work with a clear deliverable. Each must be a specific, actionable task.`,
-          `Project: ${this.projectName} — ${this.projectDescription}`,
+          baseContext,
         );
         if (retryResult.block && retryResult.block.command === "BREAKDOWN") {
           for (const subtask of retryResult.block.tasks) {
@@ -1015,10 +1012,16 @@ export default function Component() {
       const cappedTasks = validTasks.slice(0, MAX_SUBTASKS);
       for (let i = 0; i < cappedTasks.length; i++) {
         const featureFilePath = this.resolveFilePath(null, cappedTasks[i]);
+        // Strip the [File.ext] prefix from the stored description — it's
+        // already captured in filePath, and leaking it into developer prompts
+        // is noisy.
+        const cleanedDesc = cappedTasks[i]
+          .replace(/^\s*\[[^\]]+\]\s*/, "")
+          .trim();
         await db.insert(tasks).values({
           projectId: this.projectId,
           parentId: task.id,
-          description: cappedTasks[i],
+          description: cleanedDesc || cappedTasks[i],
           status: "pending",
           depth: task.depth + 1,
           sortOrder: i,
@@ -1440,6 +1443,16 @@ export default function Component() {
       // File-type-specific rules + UX quality reminders
       userMessage += `\n\n${getFileTypeRules(filePath)}`;
 
+      // Inject the file manifest so the developer knows the role of every file
+      // in the project. This prevents leaf components from being written as
+      // standalone apps and tells container files which siblings to import.
+      if (this.manifest.length > 1) {
+        const manifestLines = this.manifest
+          .map((m) => `  - ${m.path}: ${m.description}`)
+          .join("\n");
+        userMessage += `\n\nFILE ARCHITECTURE (all files in this project):\n${manifestLines}\n\nYou are writing: ${filePath}\nWrite it for its role above — NOT as a standalone app. Use props/callbacks for data that comes from a parent. Import from sibling files when they are listed in EXPORTS AVAILABLE.`;
+      }
+
       // Inject the skeleton on every step — not just step 0.
       // Later steps see the current file in context, but for code files
       // the skeleton anchors state variable names and handler names that
@@ -1487,6 +1500,54 @@ export default function Component() {
         const isDefaultSpec = requirements[0]?.startsWith(
           Pipeline.DEFAULT_SPEC_TAG,
         );
+
+        // Always inject export signatures of all completed sibling files —
+        // compact, authoritative, prevents the model from re-implementing
+        // already-defined components/types. (Improvement 4.)
+        //
+        // Source of truth: any sibling file that exists on disk. Earlier this
+        // was keyed on fileContextSummaries, but the summariser is best-effort
+        // and silently fails on small models — leaving siblings invisible.
+        const allSiblingSignatures: string[] = [];
+        const siblingPaths = new Set<string>([
+          ...this.manifest.map((m) => m.path),
+          ...Object.keys(this.fileContextSummaries),
+        ]);
+        for (const siblingPath of siblingPaths) {
+          if (siblingPath === filePath) continue;
+          const siblingDiskPath = path.join(outDir, siblingPath);
+          if (!fs.existsSync(siblingDiskPath)) continue;
+          const code = fs.readFileSync(siblingDiskPath, "utf-8");
+          const sigs = extractExportSignatures(siblingPath, code);
+          if (sigs.length === 0) continue;
+          // Compute the import specifier the next file should use.
+          // Strip extension and prefix with ./ for relative same-dir imports.
+          const importSpec = "./" + siblingPath.replace(/\.(tsx?|jsx?)$/, "");
+          const names = sigs
+            .map((s) => {
+              const m = s.match(
+                /export\s+(?:default\s+)?(?:function|const|class|interface|type)\s+([A-Za-z_$][\w$]*)/,
+              );
+              return m?.[1];
+            })
+            .filter(Boolean) as string[];
+          const importHint = names.length
+            ? `  // import: import { ${names.join(", ")} } from "${importSpec}";`
+            : "";
+          allSiblingSignatures.push(
+            `// ${siblingPath}\n${sigs.map((s) => `  ${s}`).join("\n")}${importHint ? "\n" + importHint : ""}`,
+          );
+        }
+        if (allSiblingSignatures.length > 0) {
+          // Cap total injected context so large projects don't blow the prompt.
+          const MAX_SIG_CHARS = 4000;
+          let joined = allSiblingSignatures.join("\n");
+          if (joined.length > MAX_SIG_CHARS) {
+            joined = joined.slice(0, MAX_SIG_CHARS) + "\n  // ... (truncated)";
+          }
+          userMessage += `\n\nEXPORTS AVAILABLE FROM SIBLING FILES — import these instead of re-defining them:\n${joined}`;
+        }
+
         if (isDefaultSpec) {
           const siblingSnippets: string[] = [];
           for (const [siblingPath] of Object.entries(
@@ -1561,10 +1622,13 @@ export default function Component() {
 
           // Build the per-turn instruction. After the first turn, ask the
           // model whether anything else is still needed for the feature.
+          // Turn 1 asks the model to *think* about atomic edits before
+          // emitting the first — biases toward small focused diffs and
+          // avoids feature drift. (Improvement 1.)
           const turnInstruction =
             turn === 1
-              ? req
-              : `${req}\n\n(Continuing the same feature — turn ${turn}. If everything required by this feature is already in the file, reply with the single word DONE. Otherwise, emit the next SEARCH/REPLACE block.)`;
+              ? `${req}\n\nThink (silently — do NOT write it out) of this feature as 3-5 atomic edits (e.g. "add state hook", "add handler", "wire JSX onClick", "render new element"). Output ONLY the FIRST atomic edit as a single SEARCH/REPLACE block — nothing else, no list, no prose. You will be re-prompted for each subsequent edit.`
+              : `${req}\n\n(Continuing the same feature — turn ${turn}. Output ONLY the NEXT atomic edit as a single SEARCH/REPLACE block, nothing else. If every atomic edit is now in the file, reply with the single word DONE.)`;
 
           const note = lastPatchError ?? undefined;
           const patchRes = await runDeveloperPatch(
@@ -1687,9 +1751,14 @@ export default function Component() {
         }
       }
 
-      // Self-healing loop: try → validate → feed error back → retry
+      // Self-healing loop: try → validate → feed error back → retry.
+      // Short-circuits to recovery if the model repeats the same error,
+      // since retries with identical prompts produce identical garbage and
+      // each one costs ~30-60s of model time.
       let stepUserMessage = userMessage;
       let lastGarbageOutput: string | null = null;
+      let lastErrorSignature: string | null = null;
+      let repeatedErrorCount = 0;
 
       for (
         let attempt = 1;
@@ -1712,6 +1781,21 @@ export default function Component() {
             result.prompt,
             result.raw,
           );
+          // Parse failure is a stable error — count it the same way
+          if (lastErrorSignature === "PARSE_FAIL") {
+            repeatedErrorCount++;
+          } else {
+            lastErrorSignature = "PARSE_FAIL";
+            repeatedErrorCount = 1;
+          }
+          if (repeatedErrorCount >= 2) {
+            await this.log(
+              "QA",
+              `Step ${i + 1}: same failure twice — short-circuiting to recovery`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            break;
+          }
           continue;
         }
 
@@ -1744,9 +1828,60 @@ export default function Component() {
               tasksForThisStep[0]?.id || taskGroup[0].id,
             );
             lastGarbageOutput = output;
+            // Build a stable signature from the first ~80 chars of the
+            // error summary; trailing offsets / positions vary slightly
+            // but the underlying error class is what matters.
+            const sig = `TS:${errorSummary.slice(0, 80)}`;
+            if (lastErrorSignature === sig) {
+              repeatedErrorCount++;
+            } else {
+              lastErrorSignature = sig;
+              repeatedErrorCount = 1;
+            }
+            if (repeatedErrorCount >= 2) {
+              await this.log(
+                "QA",
+                `Step ${i + 1}: identical TS error twice — short-circuiting to recovery`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+              break;
+            }
             stepUserMessage =
               userMessage +
               `\n\nYour previous output has TypeScript syntax errors:\n${errorSummary}\nFix these errors and rewrite the complete file.`;
+            continue;
+          }
+
+          // Semantic check — catches type errors and undefined identifiers
+          // that syntax check misses. Codes related to unresolved imports
+          // are filtered out (see checkTypeScriptSemantics). Improvement 3.
+          const semanticErrors = checkTypeScriptSemantics(filePath, output);
+          if (semanticErrors.length > 0) {
+            const errorSummary = semanticErrors.join("; ");
+            await this.log(
+              "QA",
+              `Step ${i + 1} attempt ${attempt} TS semantic: ${errorSummary}`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            lastGarbageOutput = output;
+            const sig = `SEM:${errorSummary.slice(0, 80)}`;
+            if (lastErrorSignature === sig) {
+              repeatedErrorCount++;
+            } else {
+              lastErrorSignature = sig;
+              repeatedErrorCount = 1;
+            }
+            if (repeatedErrorCount >= 2) {
+              await this.log(
+                "QA",
+                `Step ${i + 1}: identical semantic error twice — short-circuiting to recovery`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+              break;
+            }
+            stepUserMessage =
+              userMessage +
+              `\n\nYour previous output has TypeScript type errors:\n${errorSummary}\nFix these errors and rewrite the complete file.`;
             continue;
           }
 
@@ -1772,6 +1907,23 @@ export default function Component() {
           result.prompt,
           result.raw,
         );
+
+        // Same-error short-circuit for validation failures too
+        const valSig = `VAL:${(validation.reason || "").slice(0, 80)}`;
+        if (lastErrorSignature === valSig) {
+          repeatedErrorCount++;
+        } else {
+          lastErrorSignature = valSig;
+          repeatedErrorCount = 1;
+        }
+        if (repeatedErrorCount >= 2) {
+          await this.log(
+            "QA",
+            `Step ${i + 1}: identical validation error twice — short-circuiting to recovery`,
+            tasksForThisStep[0]?.id || taskGroup[0].id,
+          );
+          break;
+        }
 
         // Feed the error back for next attempt
         stepUserMessage =

@@ -11,15 +11,20 @@ import { parseTTM, BreakdownBlock, ReadyBlock } from "@/lib/protocol";
 const SYSTEM_PROMPT = `Break this epic into 1-2 specific, actionable task titles.
 Use 2 tasks only if there are genuinely 2 non-overlapping deliverables. Use 1 task for simple or already-specific epics.
 Each task must be a SHORT ACTION PHRASE (5-12 words) naming a concrete deliverable: a component, function, state variable, event handler, or style rule.
-Do NOT include prose like "What exactly to build:" or "Expected output:" — just the task title itself.
+
+CRITICAL — FILE TARGETING:
+If the user lists FILES with descriptions, each task title MUST start with [FileName.ext] picking the BEST-FIT file for that piece of work. Match by what the file is for (per its description) — not by keyword overlap with the task name.
+Example: a task that adds state for a list of items belongs in the file described as "list/container", NOT the file described as "single item".
+
+Do NOT include prose like "What exactly to build:" or "Expected output:" — just the [File] prefix and the task title.
 Do NOT copy the example tasks below — write tasks that match the actual epic.
 CRITICAL: Only create tasks for what the epic explicitly describes. Do NOT add features or scope not mentioned.
 You MUST reply with >>BREAKDOWN.
 
 Example (for a different project):
 >>BREAKDOWN
-- task: "Add submit button with form validation handler"
-- task: "Render user list with name and email columns"
+- task: "[FormPanel.tsx] Add submit button with form validation handler"
+- task: "[UserList.tsx] Render user list with name and email columns"
 >>END`;
 
 export async function runManager(

@@ -1,0 +1,1115 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>ollama-tiny-tasks — System Diagram</title>
+    <style>
+      *,
+      *::before,
+      *::after {
+        box-sizing: border-box;
+        margin: 0;
+        padding: 0;
+      }
+
+      body {
+        font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+        background: #0f1117;
+        color: #e2e8f0;
+        padding: 40px 24px 80px;
+        min-height: 100vh;
+      }
+
+      h1 {
+        text-align: center;
+        font-size: 1.5rem;
+        font-weight: 700;
+        color: #f8fafc;
+        margin-bottom: 4px;
+        letter-spacing: -0.02em;
+      }
+      .subtitle {
+        text-align: center;
+        font-size: 0.82rem;
+        color: #64748b;
+        margin-bottom: 48px;
+      }
+
+      /* ─── SECTION LABELS ─────────────────────────────────────────── */
+      .section-label {
+        font-size: 0.7rem;
+        font-weight: 700;
+        letter-spacing: 0.08em;
+        text-transform: uppercase;
+        color: #475569;
+        margin-bottom: 12px;
+        padding-left: 4px;
+      }
+
+      /* ─── PIPELINE COLUMN ────────────────────────────────────────── */
+      .layout {
+        display: grid;
+        grid-template-columns: 1fr 340px;
+        gap: 32px;
+        max-width: 1200px;
+        margin: 0 auto;
+      }
+
+      /* ─── STAGES ─────────────────────────────────────────────────── */
+      .stages {
+        display: flex;
+        flex-direction: column;
+        gap: 0;
+      }
+
+      .stage {
+        display: flex;
+        align-items: stretch;
+        position: relative;
+      }
+
+      /* connector line */
+      .stage:not(:last-child)::after {
+        content: "";
+        position: absolute;
+        left: 31px;
+        top: 52px;
+        bottom: -20px;
+        width: 2px;
+        background: linear-gradient(to bottom, #334155, #1e293b);
+        z-index: 0;
+      }
+
+      .stage-gap {
+        height: 20px;
+      }
+
+      .stage-icon {
+        width: 36px;
+        height: 36px;
+        border-radius: 50%;
+        display: flex;
+        align-items: center;
+        justify-content: center;
+        font-size: 1rem;
+        flex-shrink: 0;
+        margin-top: 8px;
+        margin-right: 16px;
+        position: relative;
+        z-index: 1;
+        border: 2px solid transparent;
+      }
+
+      .stage-body {
+        flex: 1;
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 14px 16px;
+        margin-bottom: 20px;
+      }
+
+      .stage-header {
+        display: flex;
+        align-items: center;
+        gap: 10px;
+        margin-bottom: 8px;
+      }
+
+      .stage-num {
+        font-size: 0.68rem;
+        font-weight: 700;
+        background: #0f172a;
+        border-radius: 4px;
+        padding: 2px 6px;
+        color: #64748b;
+        letter-spacing: 0.04em;
+      }
+
+      .stage-title {
+        font-size: 0.92rem;
+        font-weight: 700;
+        color: #f1f5f9;
+      }
+
+      .stage-desc {
+        font-size: 0.8rem;
+        color: #94a3b8;
+        line-height: 1.55;
+        margin-bottom: 10px;
+      }
+
+      /* agent pills inside a stage */
+      .agents {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        margin-top: 8px;
+      }
+
+      .agent {
+        display: inline-flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.72rem;
+        font-weight: 600;
+        padding: 3px 8px;
+        border-radius: 20px;
+        border: 1px solid transparent;
+        white-space: nowrap;
+      }
+
+      .agent-dot {
+        width: 6px;
+        height: 6px;
+        border-radius: 50%;
+      }
+
+      /* sub-items inside a stage */
+      .sub-items {
+        margin-top: 10px;
+        display: flex;
+        flex-direction: column;
+        gap: 5px;
+      }
+      .sub-item {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        padding: 4px 8px;
+        background: #0f172a;
+        border-radius: 6px;
+        border-left: 3px solid #334155;
+      }
+      .sub-item strong {
+        color: #cbd5e1;
+      }
+
+      /* condition badge */
+      .cond {
+        display: inline-block;
+        font-size: 0.65rem;
+        font-weight: 600;
+        padding: 2px 6px;
+        border-radius: 4px;
+        margin-left: 8px;
+        vertical-align: middle;
+      }
+      .cond-skip {
+        background: #0c1a2e;
+        color: #3b82f6;
+        border: 1px solid #1e3a5f;
+      }
+      .cond-if {
+        background: #1a1207;
+        color: #f59e0b;
+        border: 1px solid #3d2c07;
+      }
+      .cond-loop {
+        background: #160b1e;
+        color: #a855f7;
+        border: 1px solid #3b1e5e;
+      }
+
+      /* ─── COLOUR THEMES PER STAGE ───────────────────────────────── */
+      /* arch */
+      .s-arch .stage-icon {
+        background: #0e2337;
+        border-color: #3b82f6;
+        color: #60a5fa;
+      }
+      .s-arch .stage-body {
+        border-color: #1e3a5f;
+      }
+      /* decomp */
+      .s-decomp .stage-icon {
+        background: #102017;
+        border-color: #22c55e;
+        color: #4ade80;
+      }
+      .s-decomp .stage-body {
+        border-color: #14422a;
+      }
+      /* break */
+      .s-break .stage-icon {
+        background: #1a1207;
+        border-color: #f59e0b;
+        color: #fbbf24;
+      }
+      .s-break .stage-body {
+        border-color: #3d2c07;
+      }
+      /* tdd */
+      .s-tdd .stage-icon {
+        background: #12162e;
+        border-color: #6366f1;
+        color: #818cf8;
+      }
+      .s-tdd .stage-body {
+        border-color: #252b5e;
+      }
+      /* exec */
+      .s-exec .stage-icon {
+        background: #1a0e26;
+        border-color: #a855f7;
+        color: #c084fc;
+      }
+      .s-exec .stage-body {
+        border-color: #3b1e5e;
+      }
+      /* qa */
+      .s-qa .stage-icon {
+        background: #0e1f1f;
+        border-color: #06b6d4;
+        color: #22d3ee;
+      }
+      .s-qa .stage-body {
+        border-color: #0e3a3a;
+      }
+      /* feedback */
+      .s-fb .stage-icon {
+        background: #1e0e0e;
+        border-color: #ef4444;
+        color: #f87171;
+      }
+      .s-fb .stage-body {
+        border-color: #4a1515;
+      }
+
+      /* ─── AGENT COLOUR PALETTES ─────────────────────────────────── */
+      .a-arch {
+        background: #0e2337;
+        border-color: #1e3a5f;
+        color: #60a5fa;
+      }
+      .a-arch .agent-dot {
+        background: #3b82f6;
+      }
+      .a-pm {
+        background: #102017;
+        border-color: #14422a;
+        color: #4ade80;
+      }
+      .a-pm .agent-dot {
+        background: #22c55e;
+      }
+      .a-rev {
+        background: #13100e;
+        border-color: #3d2207;
+        color: #fb923c;
+      }
+      .a-rev .agent-dot {
+        background: #f97316;
+      }
+      .a-mgr {
+        background: #1a1207;
+        border-color: #3d2c07;
+        color: #fbbf24;
+      }
+      .a-mgr .agent-dot {
+        background: #f59e0b;
+      }
+      .a-tw {
+        background: #12162e;
+        border-color: #252b5e;
+        color: #818cf8;
+      }
+      .a-tw .agent-dot {
+        background: #6366f1;
+      }
+      .a-dev {
+        background: #1a0e26;
+        border-color: #3b1e5e;
+        color: #c084fc;
+      }
+      .a-dev .agent-dot {
+        background: #a855f7;
+      }
+      .a-clean {
+        background: #1a0e15;
+        border-color: #4a1535;
+        color: #f472b6;
+      }
+      .a-clean .agent-dot {
+        background: #ec4899;
+      }
+      .a-edit {
+        background: #120e1a;
+        border-color: #2e1e4a;
+        color: #a78bfa;
+      }
+      .a-edit .agent-dot {
+        background: #7c3aed;
+      }
+      .a-qa {
+        background: #0e1f1f;
+        border-color: #0e3a3a;
+        color: #22d3ee;
+      }
+      .a-qa .agent-dot {
+        background: #06b6d4;
+      }
+      .a-iqa {
+        background: #0e1f2f;
+        border-color: #0e2e4a;
+        color: #38bdf8;
+      }
+      .a-iqa .agent-dot {
+        background: #0ea5e9;
+      }
+      .a-hol {
+        background: #0d1f18;
+        border-color: #0e3a28;
+        color: #34d399;
+      }
+      .a-hol .agent-dot {
+        background: #10b981;
+      }
+      .a-judge {
+        background: #1a1208;
+        border-color: #3d2c07;
+        color: #fde68a;
+      }
+      .a-judge .agent-dot {
+        background: #d97706;
+      }
+      .a-sum {
+        background: #12130e;
+        border-color: #252a0e;
+        color: #a3e635;
+      }
+      .a-sum .agent-dot {
+        background: #84cc16;
+      }
+      .a-sys {
+        background: #111827;
+        border-color: #1f2937;
+        color: #9ca3af;
+      }
+      .a-sys .agent-dot {
+        background: #6b7280;
+      }
+
+      /* ─── RIGHT SIDEBAR ──────────────────────────────────────────── */
+      .sidebar {
+        display: flex;
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .card {
+        background: #1e293b;
+        border: 1px solid #334155;
+        border-radius: 10px;
+        padding: 16px;
+      }
+
+      .card h3 {
+        font-size: 0.8rem;
+        font-weight: 700;
+        color: #94a3b8;
+        text-transform: uppercase;
+        letter-spacing: 0.07em;
+        margin-bottom: 12px;
+      }
+
+      /* Data flow */
+      .flow-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 7px 0;
+        border-bottom: 1px solid #0f172a;
+        font-size: 0.78rem;
+      }
+      .flow-row:last-child {
+        border-bottom: none;
+      }
+      .flow-arrow {
+        color: #475569;
+        font-size: 0.85rem;
+        margin-top: 1px;
+        flex-shrink: 0;
+      }
+      .flow-from {
+        color: #94a3b8;
+        font-weight: 600;
+        flex-shrink: 0;
+        min-width: 80px;
+      }
+      .flow-to {
+        color: #64748b;
+      }
+
+      /* DB tables */
+      .db-table {
+        background: #0f172a;
+        border-radius: 6px;
+        padding: 8px 10px;
+        margin-bottom: 8px;
+        font-size: 0.75rem;
+      }
+      .db-table-name {
+        color: #60a5fa;
+        font-weight: 700;
+        margin-bottom: 4px;
+      }
+      .db-col {
+        color: #64748b;
+        padding: 1px 0;
+      }
+      .db-col span {
+        color: #94a3b8;
+      }
+
+      /* File manifest */
+      .manifest-row {
+        display: flex;
+        align-items: center;
+        gap: 8px;
+        padding: 5px 0;
+        border-bottom: 1px solid #0f172a;
+        font-size: 0.76rem;
+      }
+      .manifest-row:last-child {
+        border-bottom: none;
+      }
+      .file-badge {
+        font-family: monospace;
+        background: #0f172a;
+        color: #a5b4fc;
+        padding: 2px 6px;
+        border-radius: 4px;
+        font-size: 0.71rem;
+        white-space: nowrap;
+      }
+      .manifest-desc {
+        color: #64748b;
+      }
+
+      /* retry logic */
+      .retry-badge {
+        display: inline-block;
+        font-size: 0.68rem;
+        font-weight: 700;
+        padding: 2px 6px;
+        border-radius: 4px;
+        background: #1a0e26;
+        color: #c084fc;
+        border: 1px solid #3b1e5e;
+        margin-bottom: 6px;
+      }
+      .retry-row {
+        font-size: 0.75rem;
+        color: #94a3b8;
+        padding: 4px 0;
+        border-bottom: 1px solid #0f172a;
+      }
+      .retry-row:last-child {
+        border-bottom: none;
+      }
+      .retry-row strong {
+        color: #c084fc;
+      }
+
+      /* ─── CONSTANTS GRID ─────────────────────────────────────────── */
+      .const-grid {
+        display: grid;
+        grid-template-columns: 1fr 1fr;
+        gap: 8px;
+      }
+      .const-item {
+        background: #0f172a;
+        border-radius: 6px;
+        padding: 8px 10px;
+        font-size: 0.74rem;
+      }
+      .const-name {
+        color: #64748b;
+        margin-bottom: 2px;
+      }
+      .const-val {
+        color: #f1f5f9;
+        font-weight: 700;
+        font-size: 0.88rem;
+      }
+
+      /* ─── ROUTING CARD ───────────────────────────────────────────── */
+      .route-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 6px 0;
+        border-bottom: 1px solid #0f172a;
+        font-size: 0.76rem;
+      }
+      .route-row:last-child {
+        border-bottom: none;
+      }
+      .route-pri {
+        background: #0f172a;
+        color: #f59e0b;
+        font-weight: 700;
+        border-radius: 4px;
+        padding: 1px 6px;
+        font-size: 0.7rem;
+        flex-shrink: 0;
+      }
+      .route-text {
+        color: #94a3b8;
+      }
+
+      /* ─── LEGEND ─────────────────────────────────────────────────── */
+      .legend {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 10px;
+        margin-top: 8px;
+      }
+      .legend-item {
+        display: flex;
+        align-items: center;
+        gap: 5px;
+        font-size: 0.72rem;
+        color: #64748b;
+      }
+      .legend-swatch {
+        width: 10px;
+        height: 10px;
+        border-radius: 2px;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>ollama-tiny-tasks — System Architecture</h1>
+    <p class="subtitle">
+      Pipeline orchestrator · Local LLM (Ollama) · SQLite · Next.js UI
+    </p>
+
+    <div class="layout">
+      <!-- ─────────────────── LEFT: PIPELINE ─────────────────── -->
+      <div>
+        <div class="section-label">Pipeline Stages (in order)</div>
+        <div class="stages">
+          <!-- 0. ARCHITECT -->
+          <div class="stage s-arch">
+            <div class="stage-icon">🏛</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 0</span>
+                <span class="stage-title">Architect</span>
+              </div>
+              <div class="stage-desc">
+                Determines which output files to produce and what each is
+                responsible for. Builds the <strong>file manifest</strong> — a
+                list of
+                <code style="font-size: 0.78rem; color: #a5b4fc"
+                  >{path, description, imports}</code
+                >
+                entries that drive all downstream routing. Falls back to
+                heuristic inference if parse fails.
+              </div>
+              <div class="agents">
+                <span class="agent a-arch"
+                  ><span class="agent-dot"></span>Architect</span
+                >
+              </div>
+              <div class="sub-items">
+                <div class="sub-item">
+                  <strong>Output:</strong> manifest saved to
+                  <code style="font-size: 0.75rem">projects.fileManifest</code>
+                  — e.g.
+                  <em
+                    >Card.tsx (single card), KanbanColumn.tsx (column + input),
+                    App.tsx (root state)</em
+                  >
+                </div>
+                <div class="sub-item">
+                  <strong>Also:</strong> ContractDesigner produces shared
+                  TypeScript interfaces injected into every subsequent file
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 1. DECOMPOSE -->
+          <div class="stage s-decomp">
+            <div class="stage-icon">🧩</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 1</span>
+                <span class="stage-title">Decompose</span>
+              </div>
+              <div class="stage-desc">
+                Project Manager splits the description into
+                <strong>3–5 epics</strong> (high-level user-facing features).
+                Reviewer filters out unnecessary ones. Epics are stored as
+                depth-1 tasks with status <em>awaiting_approval</em>.
+              </div>
+              <div class="agents">
+                <span class="agent a-pm"
+                  ><span class="agent-dot"></span>ProjectManager</span
+                >
+                <span class="agent a-rev"
+                  ><span class="agent-dot"></span>Reviewer</span
+                >
+              </div>
+              <div class="sub-items">
+                <div class="sub-item"><strong>Cap:</strong> MAX_EPICS = 4</div>
+                <div class="sub-item">
+                  <strong>Output:</strong> rows in
+                  <code style="font-size: 0.75rem">tasks</code> table, depth=1,
+                  status=awaiting_approval
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 2. BREAKDOWN -->
+          <div class="stage s-break">
+            <div class="stage-icon">📋</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 2</span>
+                <span class="stage-title">Breakdown</span>
+              </div>
+              <div class="stage-desc">
+                Manager expands each epic into
+                <strong>2–3 concrete features</strong> (depth-2 tasks / leaves).
+                Manager receives the full file manifest and must prefix each
+                feature with
+                <code style="font-size: 0.78rem; color: #fbbf24"
+                  >[FileName.ext]</code
+                >
+                to declare which file it belongs to. Prefix is stripped before
+                storing.
+              </div>
+              <div class="agents">
+                <span class="agent a-mgr"
+                  ><span class="agent-dot"></span>Manager</span
+                >
+              </div>
+              <div class="sub-items">
+                <div class="sub-item">
+                  <strong>Cap:</strong> MAX_SUBTASKS = 2 per epic · MAX_TASKS =
+                  200 total
+                </div>
+                <div class="sub-item">
+                  <strong>Dedup:</strong> Semantic similarity check removes
+                  near-duplicate features (Jaccard &gt; 0.6)
+                </div>
+                <div class="sub-item">
+                  <strong>Routing:</strong>
+                  <code style="font-size: 0.75rem">[File.ext]</code> prefix →
+                  priority-1 route; else keyword scoring; else round-robin
+                </div>
+                <div class="sub-item">
+                  <strong>Output:</strong> depth-2 tasks, each with
+                  <code style="font-size: 0.75rem">file_path</code> assigned
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 3. TDD -->
+          <div class="stage s-tdd">
+            <div class="stage-icon">🧪</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 3</span>
+                <span class="stage-title">TDD — Generate Tests</span>
+                <span class="cond cond-skip">code files only</span>
+              </div>
+              <div class="stage-desc">
+                Test-writer produces a
+                <code style="font-size: 0.78rem; color: #818cf8"
+                  >.test.tsx</code
+                >
+                /
+                <code style="font-size: 0.78rem; color: #818cf8">.test.ts</code>
+                file for each output file. Tests are written <em>before</em> the
+                implementation so they define the contract. Skipped for non-code
+                files (markdown, JSON, etc.).
+              </div>
+              <div class="agents">
+                <span class="agent a-tw"
+                  ><span class="agent-dot"></span>TestWriter</span
+                >
+              </div>
+              <div class="sub-items">
+                <div class="sub-item">
+                  <strong>Framework:</strong> Vitest + @testing-library/react
+                </div>
+                <div class="sub-item">
+                  <strong>Output:</strong> test files written to
+                  <code style="font-size: 0.75rem">output/{id}/*.test.tsx</code>
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 4. EXECUTE -->
+          <div class="stage s-exec">
+            <div class="stage-icon">⚡</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 4</span>
+                <span class="stage-title">Execute</span>
+              </div>
+              <div class="stage-desc">
+                One file at a time (build-order waves). For each file: a
+                <strong>planner</strong> outlines the implementation, then a
+                <strong>developer</strong> sequentially adds one feature per
+                step. Each step reads the current file, adds one feature,
+                validates, writes. Receives
+                <strong>FILE ARCHITECTURE</strong> (manifest descriptions) and
+                <strong>sibling export signatures</strong> so components know
+                their role and what to import.
+              </div>
+              <div class="agents">
+                <span class="agent a-dev"
+                  ><span class="agent-dot"></span>Developer</span
+                >
+                <span class="agent a-edit"
+                  ><span class="agent-dot"></span>Editor (patch)</span
+                >
+                <span class="agent a-clean"
+                  ><span class="agent-dot"></span>Cleaner (syntax)</span
+                >
+                <span class="agent a-sum"
+                  ><span class="agent-dot"></span>Summariser</span
+                >
+              </div>
+              <div class="sub-items">
+                <div class="sub-item">
+                  <strong>Turn 1:</strong> "Output ONLY the FIRST atomic edit as
+                  a single SEARCH/REPLACE block" — prevents giant one-shot dumps
+                </div>
+                <div class="sub-item">
+                  <strong>After each edit:</strong> TypeScript syntax check →
+                  semantic check (DOM lib, caps at 5 errors, ignores
+                  module-not-found noise)
+                </div>
+                <div class="sub-item">
+                  <strong>Syntax fail:</strong> Cleaner → minimal retry →
+                  scaffold tactic → reframe tactic (up to MAX_RETRIES = 2)
+                </div>
+                <div class="sub-item">
+                  <strong>Export signatures</strong> of completed siblings
+                  injected → import hints like
+                  <code style="font-size: 0.75rem"
+                    >import {"{ Card }"} from "./Card"</code
+                  >
+                </div>
+                <div class="sub-item">
+                  <strong>Waves:</strong> files with no imports run first;
+                  App.tsx (root) runs last
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 5. QA -->
+          <div class="stage s-qa">
+            <div class="stage-icon">🔍</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 5</span>
+                <span class="stage-title">QA</span>
+              </div>
+              <div class="stage-desc">
+                Runs the generated Vitest tests. On failure: iterative-QA loop
+                finds one bug, fixes it, re-runs. Holistic reviewer checks
+                structural consistency across files. Judge decides if output is
+                good enough to skip expensive passes.
+              </div>
+              <div class="agents">
+                <span class="agent a-qa"
+                  ><span class="agent-dot"></span>TestQA (vitest)</span
+                >
+                <span class="agent a-iqa"
+                  ><span class="agent-dot"></span>IterativeQA</span
+                >
+                <span class="agent a-hol"
+                  ><span class="agent-dot"></span>HolisticReviewer</span
+                >
+                <span class="agent a-judge"
+                  ><span class="agent-dot"></span>Judge</span
+                >
+              </div>
+              <div class="sub-items">
+                <div class="sub-item">
+                  <strong>IterativeQA loop:</strong> "find one bug → fix →
+                  re-run" (max iterations)
+                </div>
+                <div class="sub-item">
+                  <strong>Judge verdict:</strong>
+                  <code style="font-size: 0.75rem">proceed</code> |
+                  <code style="font-size: 0.75rem">warn</code> |
+                  <code style="font-size: 0.75rem">skip_vitest</code>
+                </div>
+                <div class="sub-item">
+                  <strong>Skip condition:</strong> all tests pass on first run →
+                  holistic review + improvement skipped
+                </div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 6. FEEDBACK (optional) -->
+          <div class="stage s-fb">
+            <div class="stage-icon">💬</div>
+            <div class="stage-body">
+              <div class="stage-header">
+                <span class="stage-num">STAGE 6</span>
+                <span class="stage-title">Feedback Pass</span>
+                <span class="cond cond-if">user-triggered</span>
+              </div>
+              <div class="stage-desc">
+                User submits feedback via the UI. FeedbackPlanner creates
+                targeted fix tasks. FeedbackEditor applies SEARCH/REPLACE
+                patches. QA re-runs after. Can target specific files or the
+                whole project.
+              </div>
+              <div class="agents">
+                <span class="agent a-pm"
+                  ><span class="agent-dot"></span>FeedbackPlanner</span
+                >
+                <span class="agent a-edit"
+                  ><span class="agent-dot"></span>FeedbackEditor</span
+                >
+                <span class="agent a-qa"
+                  ><span class="agent-dot"></span>QA (re-run)</span
+                >
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- ─────────────────── RIGHT: SIDEBAR ─────────────────── -->
+      <div class="sidebar">
+        <!-- Constants -->
+        <div class="card">
+          <h3>Pipeline Constants</h3>
+          <div class="const-grid">
+            <div class="const-item">
+              <div class="const-name">Max Epics</div>
+              <div class="const-val">4</div>
+            </div>
+            <div class="const-item">
+              <div class="const-name">Max Features / Epic</div>
+              <div class="const-val">2</div>
+            </div>
+            <div class="const-item">
+              <div class="const-name">Max Tasks Total</div>
+              <div class="const-val">200</div>
+            </div>
+            <div class="const-item">
+              <div class="const-name">Max Req / File</div>
+              <div class="const-val">6</div>
+            </div>
+            <div class="const-item">
+              <div class="const-name">Max Retries</div>
+              <div class="const-val">2</div>
+            </div>
+            <div class="const-item">
+              <div class="const-name">Depth (Epic→Feature)</div>
+              <div class="const-val">2</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- File routing -->
+        <div class="card">
+          <h3>File Routing Priority</h3>
+          <p style="font-size: 0.75rem; color: #64748b; margin-bottom: 10px">
+            How a feature task is assigned to a file (<code
+              style="color: #a5b4fc"
+              >assignFileForTask</code
+            >)
+          </p>
+          <div class="route-row">
+            <span class="route-pri">P1</span
+            ><span class="route-text"
+              ><code style="color: #fbbf24">[FileName.ext]</code> prefix in task
+              title — set by Manager. Direct, case-insensitive manifest
+              lookup.</span
+            >
+          </div>
+          <div class="route-row">
+            <span class="route-pri">P2</span
+            ><span class="route-text"
+              >Explicit <code style="color: #a5b4fc">filePath</code> column
+              already set on the task row.</span
+            >
+          </div>
+          <div class="route-row">
+            <span class="route-pri">P3</span
+            ><span class="route-text"
+              >Keyword scoring — Jaccard overlap between task words and manifest
+              file descriptions.</span
+            >
+          </div>
+          <div class="route-row">
+            <span class="route-pri">P4</span
+            ><span class="route-text"
+              >Round-robin cursor — tiebreak when all files score equally.</span
+            >
+          </div>
+        </div>
+
+        <!-- DB Schema -->
+        <div class="card">
+          <h3>Database (SQLite via Drizzle)</h3>
+          <div class="db-table">
+            <div class="db-table-name">projects</div>
+            <div class="db-col"><span>id</span>, name, description, status</div>
+            <div class="db-col">
+              <span>fileManifest</span> — JSON array of {path, description,
+              imports}
+            </div>
+            <div class="db-col">
+              <span>currentStage</span>, completedStages, currentActivity
+            </div>
+          </div>
+          <div class="db-table">
+            <div class="db-table-name">tasks</div>
+            <div class="db-col">
+              <span>id</span>, project_id, parent_id, depth (1=epic, 2=feature)
+            </div>
+            <div class="db-col">
+              <span>description</span>, status, file_path, sort_order
+            </div>
+            <div class="db-col">
+              <span>retry_count</span>, parse_retry_count, qa_reason,
+              stuck_reason
+            </div>
+          </div>
+          <div class="db-table">
+            <div class="db-table-name">logs</div>
+            <div class="db-col">
+              <span>agent</span> — ARCH, PM, REV, MGR, DEV, QA, SUM…
+            </div>
+            <div class="db-col">
+              <span>raw_prompt</span>, raw_response — full LLM turns
+            </div>
+          </div>
+        </div>
+
+        <!-- Retry / recovery -->
+        <div class="card">
+          <h3>Execute Recovery Chain</h3>
+          <p style="font-size: 0.75rem; color: #64748b; margin-bottom: 10px">
+            What happens when a DEV step produces invalid code
+          </p>
+          <div class="retry-row">
+            1. <strong>Syntax check</strong> (TS compiler API) — errors appended
+            to next prompt
+          </div>
+          <div class="retry-row">
+            2. <strong>Semantic check</strong> (getSemanticDiagnostics, DOM lib)
+            — caps at 5, ignores import noise
+          </div>
+          <div class="retry-row">
+            3. <strong>Cleaner</strong> — targeted fix prompt with the error
+          </div>
+          <div class="retry-row">
+            4. <strong>Minimal retry</strong> — stripped-down re-ask
+          </div>
+          <div class="retry-row">
+            5. <strong>Scaffold tactic</strong> — rewrite from scaffold up
+          </div>
+          <div class="retry-row">
+            6. <strong>Reframe tactic</strong> — rephrased task description
+          </div>
+          <div class="retry-row">
+            7. <strong>Mark stuck</strong> — task paused after MAX_RETRIES = 2
+          </div>
+        </div>
+
+        <!-- Data flow key -->
+        <div class="card">
+          <h3>Key Data Flows</h3>
+          <div class="flow-row">
+            <span class="flow-arrow">→</span
+            ><span class="flow-from">User desc</span
+            ><span class="flow-to">Architect → file manifest → all agents</span>
+          </div>
+          <div class="flow-row">
+            <span class="flow-arrow">→</span
+            ><span class="flow-from">Manifest</span
+            ><span class="flow-to"
+              >Manager (knows file roles) → features with [File.ext]
+              prefix</span
+            >
+          </div>
+          <div class="flow-row">
+            <span class="flow-arrow">→</span
+            ><span class="flow-from">Sibling exports</span
+            ><span class="flow-to"
+              >Injected into each Developer step as import hints</span
+            >
+          </div>
+          <div class="flow-row">
+            <span class="flow-arrow">→</span
+            ><span class="flow-from">Contracts</span
+            ><span class="flow-to"
+              >Shared TS interfaces injected into every file step</span
+            >
+          </div>
+          <div class="flow-row">
+            <span class="flow-arrow">→</span
+            ><span class="flow-from">Test results</span
+            ><span class="flow-to"
+              >IterativeQA loop → targeted fixes → re-run</span
+            >
+          </div>
+          <div class="flow-row">
+            <span class="flow-arrow">→</span
+            ><span class="flow-from">Output files</span
+            ><span class="flow-to"
+              ><code style="font-size: 0.75rem">output/{projectId}/</code> on
+              disk, streamed to UI</span
+            >
+          </div>
+        </div>
+
+        <!-- Output example -->
+        <div class="card">
+          <h3>Example: Kanban Board Output</h3>
+          <div class="manifest-row">
+            <span class="file-badge">Card.tsx</span
+            ><span class="manifest-desc"
+              >Single card display + delete button</span
+            >
+          </div>
+          <div class="manifest-row">
+            <span class="file-badge">KanbanColumn.tsx</span
+            ><span class="manifest-desc"
+              >Column layout, card list, add input, drop target</span
+            >
+          </div>
+          <div class="manifest-row">
+            <span class="file-badge">App.tsx</span
+            ><span class="manifest-desc"
+              >Root state (columns/cards), drag+drop, wires columns</span
+            >
+          </div>
+          <div class="manifest-row">
+            <span class="file-badge">Card.test.tsx</span
+            ><span class="manifest-desc">Vitest tests for Card</span>
+          </div>
+          <div class="manifest-row">
+            <span class="file-badge">KanbanColumn.test.tsx</span
+            ><span class="manifest-desc">Vitest tests for KanbanColumn</span>
+          </div>
+          <div class="manifest-row">
+            <span class="file-badge">App.test.tsx</span
+            ><span class="manifest-desc">Vitest tests for App</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </body>
+</html>

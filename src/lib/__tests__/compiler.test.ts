@@ -6,7 +6,11 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { checkTypeScriptSyntax } from "@/lib/ops/compiler";
+import {
+  checkTypeScriptSyntax,
+  extractExportSignatures,
+  checkTypeScriptSemantics,
+} from "@/lib/ops/compiler";
 
 // ─── Non-TS files ─────────────────────────────────────────────────────────────
 
@@ -148,5 +152,145 @@ describe("checkTypeScriptSyntax — does not throw", () => {
     expect(() =>
       checkTypeScriptSyntax("x.ts", "🤖🤖🤖 @@@!!!! <<<>>>"),
     ).not.toThrow();
+  });
+});
+
+// ─── extractExportSignatures ──────────────────────────────────────────────────
+
+describe("extractExportSignatures", () => {
+  it("returns [] for non-TS files", () => {
+    expect(extractExportSignatures("styles.css", "body{}")).toEqual([]);
+  });
+
+  it("extracts exported function declarations", () => {
+    const sigs = extractExportSignatures(
+      "a.ts",
+      `export function add(a: number, b: number): number { return a + b; }`,
+    );
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]).toContain("export function add");
+    expect(sigs[0]).toContain("a: number");
+    expect(sigs[0]).toContain(": number");
+  });
+
+  it("extracts default exported function", () => {
+    const sigs = extractExportSignatures(
+      "App.tsx",
+      `export default function App(): JSX.Element { return <div/>; }`,
+    );
+    expect(sigs[0]).toMatch(/export default function App/);
+  });
+
+  it("extracts exported const with type annotation", () => {
+    const sigs = extractExportSignatures(
+      "Card.tsx",
+      `import React from 'react';
+type Props = { title: string };
+export const Card: React.FC<Props> = ({ title }) => <div>{title}</div>;`,
+    );
+    expect(sigs.some((s) => s.includes("export const Card"))).toBe(true);
+    expect(sigs.some((s) => s.includes("React.FC<Props>"))).toBe(true);
+  });
+
+  it("extracts exported interface and type alias", () => {
+    const sigs = extractExportSignatures(
+      "types.ts",
+      `export interface CardProps { title: string; onDelete: () => void; }
+export type Id = string | number;`,
+    );
+    expect(sigs.some((s) => s.includes("CardProps"))).toBe(true);
+    expect(sigs.some((s) => s.includes("type Id"))).toBe(true);
+  });
+
+  it("ignores non-exported declarations", () => {
+    const sigs = extractExportSignatures(
+      "a.ts",
+      `const internal = 1;
+function helper() {}
+export const visible = 2;`,
+    );
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]).toContain("visible");
+  });
+
+  it("returns [] for empty content", () => {
+    expect(extractExportSignatures("a.ts", "")).toEqual([]);
+  });
+
+  it("extracts param shape from untyped arrow component", () => {
+    const sigs = extractExportSignatures(
+      "Card.tsx",
+      `export const Card = ({ title, onDelete }) => <div onClick={onDelete}>{title}</div>;`,
+    );
+    expect(sigs).toHaveLength(1);
+    expect(sigs[0]).toContain("export const Card");
+    expect(sigs[0]).toContain("title");
+    expect(sigs[0]).toContain("onDelete");
+    expect(sigs[0]).toContain("=>");
+  });
+
+  it("does not throw on malformed source", () => {
+    expect(() =>
+      extractExportSignatures("a.ts", "export function $$$ ((("),
+    ).not.toThrow();
+  });
+});
+
+// ─── checkTypeScriptSemantics ─────────────────────────────────────────────────
+
+describe("checkTypeScriptSemantics", () => {
+  it("returns [] for non-TS files", () => {
+    expect(checkTypeScriptSemantics("styles.css", "body{}")).toEqual([]);
+  });
+
+  it("ignores unresolved imports (cross-file noise)", () => {
+    // React, useState etc. cannot resolve — should not yield errors.
+    const errs = checkTypeScriptSemantics(
+      "App.tsx",
+      `import React, { useState } from 'react';
+export default function App() {
+  const [n, setN] = useState(0);
+  return <div onClick={() => setN(n + 1)}>{n}</div>;
+}`,
+    );
+    expect(errs).toEqual([]);
+  });
+
+  it("does not false-positive on standard string/array methods (DOM lib loaded)", () => {
+    // Regression: without lib: ['dom'], .trim() / .map() trigger
+    // "Property does not exist on type" false positives.
+    const errs = checkTypeScriptSemantics(
+      "App.tsx",
+      `function clean(s: string): string[] {
+  return s.trim().split(",").map((x) => x.trim());
+}
+const arr: number[] = [1, 2, 3].map((n) => n * 2);
+const el = document.getElementById("x");`,
+    );
+    expect(errs).toEqual([]);
+  });
+
+  it("catches duplicate object literal keys (real bug class)", () => {
+    const errs = checkTypeScriptSemantics(
+      "a.ts",
+      `const o = { foo: 1, foo: 2 };`,
+    );
+    expect(errs.length).toBeGreaterThan(0);
+  });
+
+  it("does not throw on garbage input", () => {
+    expect(() =>
+      checkTypeScriptSemantics("a.ts", "🤖 @@@ <<<>>>"),
+    ).not.toThrow();
+  });
+
+  it("returns [] for clean code", () => {
+    expect(
+      checkTypeScriptSemantics(
+        "a.ts",
+        `function add(a: number, b: number): number { return a + b; }
+const x = add(1, 2);`,
+      ),
+    ).toEqual([]);
   });
 });

@@ -224,7 +224,7 @@ export function getFileTypeRules(filePath: string): string {
   switch (ext) {
     case "tsx":
     case "jsx":
-      return "Rules: Inline styles (React style objects). Export default function component. Do NOT use import statements except React.\nEvery handler must do real work (NEVER use alert() or console.log() as the action). Every input must be controlled (value + onChange). Show visual feedback after user actions.";
+      return 'Rules: Inline styles (React style objects). Export default function component. Only import from "react" or sibling files ("./Foo") — do NOT import npm packages.\nIf EXPORTS AVAILABLE FROM SIBLING FILES are listed above, import and use those components instead of re-implementing them.\nEvery handler must do real work (NEVER use alert() or console.log() as the action). Every input must be controlled (value + onChange). Show visual feedback after user actions.';
 
     case "html":
     case "htm":
