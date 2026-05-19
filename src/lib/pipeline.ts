@@ -3879,11 +3879,18 @@ output: |
         if (editValidation.valid && editSyntaxErrors.length === 0) {
           // Oscillation guard: reject if this content was seen before
           const fp = (c: string) => `${c.length}:${c.slice(0, 200)}`;
-          const seenHashes = fileContentHashes.get(resolvedFile) ?? new Set<string>();
+          const seenHashes =
+            fileContentHashes.get(resolvedFile) ?? new Set<string>();
           if (seenHashes.has(fp(editRepaired))) {
-            await this.log("QA", `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`);
+            await this.log(
+              "QA",
+              `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`,
+            );
             previousFixes.push(`${problem} (skipped — oscillation detected)`);
-            fileFailCount.set(resolvedFile, (fileFailCount.get(resolvedFile) ?? 0) + 1);
+            fileFailCount.set(
+              resolvedFile,
+              (fileFailCount.get(resolvedFile) ?? 0) + 1,
+            );
           } else {
             seenHashes.add(fp(existingContent));
             fileContentHashes.set(resolvedFile, seenHashes);
@@ -3943,11 +3950,18 @@ output: |
         if (validation.valid && rewriteSyntaxErrors.length === 0) {
           // Oscillation guard: reject if this content was seen before
           const fp = (c: string) => `${c.length}:${c.slice(0, 200)}`;
-          const seenHashesFull = fileContentHashes.get(resolvedFile) ?? new Set<string>();
+          const seenHashesFull =
+            fileContentHashes.get(resolvedFile) ?? new Set<string>();
           if (seenHashesFull.has(fp(repaired))) {
-            await this.log("QA", `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`);
+            await this.log(
+              "QA",
+              `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`,
+            );
             previousFixes.push(`${problem} (skipped — oscillation detected)`);
-            fileFailCount.set(resolvedFile, (fileFailCount.get(resolvedFile) ?? 0) + 1);
+            fileFailCount.set(
+              resolvedFile,
+              (fileFailCount.get(resolvedFile) ?? 0) + 1,
+            );
           } else {
             seenHashesFull.add(fp(existingContent));
             fileContentHashes.set(resolvedFile, seenHashesFull);
@@ -4173,7 +4187,52 @@ output: |
         honingApplied = true;
         break;
       }
-      void honingApplied; // used only for clarity
+
+      // ── Patch failed both attempts: fall back to full-file rewrite ──
+      if (!honingApplied) {
+        const currentContent = fs.readFileSync(fullPath, "utf-8");
+        let rewriteMsg = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
+        rewriteMsg += `Current ${resolved}:\n${currentContent}\n\n`;
+        rewriteMsg += `MISSING SPEC FEATURE: ${feature}. Add the minimum code to satisfy this requirement. Wire it into the UI if applicable.\n\n`;
+        rewriteMsg += `Apply ONLY this feature addition. Keep everything else exactly the same. Rewrite the COMPLETE ${resolved} file.`;
+
+        rewriteMsg = this.withCustomInstructions(rewriteMsg);
+
+        const rewriteResult = await runDeveloper(this.model, rewriteMsg, resolved);
+        if (rewriteResult.block) {
+          const output = rewriteResult.block.output;
+          const { repaired } = autoRepairOutput(output, resolved);
+          const rValidation = validateOutput(repaired, resolved, { allowScaffold: true });
+          const rExt = (resolved.split(".").pop() ?? "").toLowerCase();
+          const rSyntax =
+            rValidation.valid && ["ts", "tsx", "js", "jsx"].includes(rExt)
+              ? checkTypeScriptSyntax(resolved, repaired)
+              : [];
+          if (rValidation.valid && rSyntax.length === 0) {
+            await this.writeOutputFile(resolved, repaired);
+            await this.log(
+              "REV",
+              `Honing: applied "${feature}" to ${resolved} via full rewrite (${rewriteResult.tokens} tokens)`,
+              undefined,
+              rewriteResult.prompt,
+              rewriteResult.raw,
+            );
+          } else {
+            const reason = !rValidation.valid
+              ? rValidation.reason
+              : `TS syntax: ${rSyntax[0]}`;
+            await this.log(
+              "REV",
+              `Honing: full-rewrite for "${feature}" invalid (${reason}) — keeping original`,
+            );
+          }
+        } else {
+          await this.log(
+            "REV",
+            `Honing: full-rewrite for "${feature}" failed (no output block)`,
+          );
+        }
+      }
     }
   }
 
