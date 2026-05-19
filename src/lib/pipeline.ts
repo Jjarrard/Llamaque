@@ -1660,7 +1660,18 @@ export default function ${compName}() {
 
           const blocks = parsePatch(patchRes.raw);
           if (blocks.length === 0) {
-            // No block AND no DONE: treat as model giving up — fall back
+            if (totalBlocks > 0) {
+              // Model produced prose after successfully applying N blocks —
+              // treat as implicit DONE rather than triggering a full rewrite.
+              await this.log(
+                "QA",
+                `Step ${i + 1} patch turn ${turn}: no block — treating as DONE (${totalBlocks} block(s) already applied)`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+              modelSaidDone = true;
+              break;
+            }
+            // No block AND no prior progress: model gave up — fall back
             await this.log(
               "QA",
               `Step ${i + 1} patch turn ${turn}: no SEARCH/REPLACE block parsed — falling back to full rewrite`,
@@ -4055,71 +4066,87 @@ output: |
 
       const fullPath = path.join(outDir, resolved);
       if (!fs.existsSync(fullPath)) continue;
-      const current = fs.readFileSync(fullPath, "utf-8");
 
-      const numbered = current
-        .split("\n")
-        .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
-        .join("\n");
+      // Retry loop: try the patch; on failure give the model one retry with
+      // an explicit error note (same pattern used in the execute loop).
+      let honingApplied = false;
+      let honingNote: string | undefined;
+      for (let attempt = 1; attempt <= 2; attempt++) {
+        const current = fs.readFileSync(fullPath, "utf-8");
 
-      const featureInstruction = `MISSING SPEC FEATURE: ${feature}. Add the minimum code to satisfy this requirement. Wire it into the UI if applicable.`;
+        const numbered = current
+          .split("\n")
+          .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
+          .join("\n");
 
-      const patchRes = await runDeveloperPatch(
-        this.model,
-        resolved,
-        numbered,
-        featureInstruction,
-        this.projectName,
-        this.projectDescription,
-      );
+        const featureInstruction = `MISSING SPEC FEATURE: ${feature}. Add the minimum code to satisfy this requirement. Wire it into the UI if applicable.`;
 
-      const blocks = parsePatch(patchRes.raw);
-      if (blocks.length === 0) {
+        const patchRes = await runDeveloperPatch(
+          this.model,
+          resolved,
+          numbered,
+          featureInstruction,
+          this.projectName,
+          this.projectDescription,
+          honingNote,
+        );
+
+        const blocks = parsePatch(patchRes.raw);
+        if (blocks.length === 0) {
+          await this.log(
+            "REV",
+            `Honing: no patch block produced for "${feature}"`,
+          );
+          break;
+        }
+
+        // Apply only the first block (single-block-per-turn convention)
+        const applied = applyPatch(current, [blocks[0]]);
+        if (!applied.ok) {
+          if (attempt === 1) {
+            // First failure: retry with error note
+            honingNote = `Your previous SEARCH did not match the file (${applied.reason}). The file is unchanged. Re-read the CURRENT file shown below and emit a corrected SEARCH/REPLACE block with the exact existing text.`;
+            continue;
+          }
+          await this.log(
+            "REV",
+            `Honing: patch failed for "${feature}" after retry: ${applied.reason}`,
+          );
+          break;
+        }
+
+        const { repaired } = autoRepairOutput(applied.content, resolved);
+        const candidate = repaired || applied.content;
+        const validation = validateOutput(candidate, resolved, {
+          allowScaffold: true,
+        });
+        const syntax = validation.valid
+          ? checkTypeScriptSyntax(resolved, candidate)
+          : [];
+
+        if (!validation.valid || syntax.length > 0) {
+          const reason = !validation.valid
+            ? validation.reason
+            : `TS syntax: ${syntax.join("; ")}`;
+          await this.log(
+            "REV",
+            `Honing: patch for "${feature}" invalid (${reason}) — keeping original`,
+          );
+          break;
+        }
+
+        await this.writeOutputFile(resolved, candidate);
         await this.log(
           "REV",
-          `Honing: no patch block produced for "${feature}"`,
+          `Honing: applied "${feature}" to ${resolved} (${applied.blocksApplied} block, ${patchRes.tokens} tokens)`,
+          undefined,
+          patchRes.prompt,
+          patchRes.raw,
         );
-        continue;
+        honingApplied = true;
+        break;
       }
-
-      // Apply only the first block (single-block-per-turn convention)
-      const applied = applyPatch(current, [blocks[0]]);
-      if (!applied.ok) {
-        await this.log(
-          "REV",
-          `Honing: patch failed for "${feature}": ${applied.reason}`,
-        );
-        continue;
-      }
-
-      const { repaired } = autoRepairOutput(applied.content, resolved);
-      const candidate = repaired || applied.content;
-      const validation = validateOutput(candidate, resolved, {
-        allowScaffold: true,
-      });
-      const syntax = validation.valid
-        ? checkTypeScriptSyntax(resolved, candidate)
-        : [];
-
-      if (!validation.valid || syntax.length > 0) {
-        const reason = !validation.valid
-          ? validation.reason
-          : `TS syntax: ${syntax.join("; ")}`;
-        await this.log(
-          "REV",
-          `Honing: patch for "${feature}" invalid (${reason}) — keeping original`,
-        );
-        continue;
-      }
-
-      await this.writeOutputFile(resolved, candidate);
-      await this.log(
-        "REV",
-        `Honing: applied "${feature}" to ${resolved} (${applied.blocksApplied} block, ${patchRes.tokens} tokens)`,
-        undefined,
-        patchRes.prompt,
-        patchRes.raw,
-      );
+      void honingApplied; // used only for clarity
     }
   }
 
