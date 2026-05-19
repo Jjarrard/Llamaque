@@ -65,4 +65,29 @@ missing:
     expect(result.done).toEqual(["a"]);
     expect(result.missing).toEqual([{ feature: "b", file: "App.tsx" }]);
   });
+
+  it("ignores sentinel 'None' in missing list", () => {
+    const text = `>>PROGRESS
+done:
+- all features present
+missing:
+- None
+nextAction: All spec features implemented.
+>>END`;
+    const result = parseProgress(text, files);
+    expect(result.missing).toEqual([]);
+  });
+
+  it("ignores 'N/A' and 'nothing' sentinels", () => {
+    const text = `>>PROGRESS
+done:
+- add expense
+missing:
+- N/A
+- nothing
+nextAction: All done.
+>>END`;
+    const result = parseProgress(text, files);
+    expect(result.missing).toEqual([]);
+  });
 });

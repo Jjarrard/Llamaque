@@ -185,6 +185,18 @@ export function parseProgress(
       }
       // Final fallback: use the first known file (best-guess targeting)
       if (!file && knownFiles.length > 0) file = knownFiles[0];
+      // Filter sentinel "nothing missing" values small models emit
+      const featureLower = feature.toLowerCase().replace(/[^a-z]/g, "");
+      if (
+        featureLower === "none" ||
+        featureLower === "na" ||
+        featureLower === "nothing" ||
+        featureLower === "noneallspecfeatureshavebeenimplemented" ||
+        featureLower === "allspecfeatureshavebeenimplemented" ||
+        featureLower === "allfeaturesdone"
+      ) {
+        continue;
+      }
       missing.push({ feature, file });
     }
   }

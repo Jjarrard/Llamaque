@@ -2858,8 +2858,7 @@ export default function Component() {
   private async runTestQA(targetFile?: string): Promise<boolean> {
     // Determine the primary code file and its test file
     const primaryFile =
-      targetFile ||
-      this.manifest.find((f) => supportsTDD(f.path))?.path;
+      targetFile || this.manifest.find((f) => supportsTDD(f.path))?.path;
     if (!primaryFile) {
       await this.log(
         "TDD",
@@ -3709,6 +3708,11 @@ output: |
     // can't make progress and further rewrites risk breaking working code.
     const fileFailCount = new Map<string, number>();
     const MAX_FILE_VALIDATION_FAILS = 2;
+    // Track TOTAL fix attempts per file (successful or not). If the model
+    // keeps returning to the same file (rephrasing the same issue each round)
+    // we cap at 3 attempts total — any deeper looping means we can't solve it.
+    const fileTotalAttempts = new Map<string, number>();
+    const MAX_FILE_TOTAL_ATTEMPTS = 3;
     let round = 0;
 
     while (round < Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
@@ -3795,6 +3799,20 @@ output: |
         );
         continue;
       }
+
+      // Skip if this file has already been attempted too many times in total.
+      const fileTotAttempts = fileTotalAttempts.get(resolvedFile) ?? 0;
+      if (fileTotAttempts >= MAX_FILE_TOTAL_ATTEMPTS) {
+        await this.log(
+          "QA",
+          `Round ${round}: ${resolvedFile} has been attempted ${fileTotAttempts} times — skipping to avoid loop`,
+        );
+        previousFixes.push(
+          `${problem} (skipped — file attempt cap reached)`,
+        );
+        continue;
+      }
+      fileTotalAttempts.set(resolvedFile, fileTotAttempts + 1);
 
       // Build fix prompt for the Developer
       const existingContent = readFile(resolvedFile);
