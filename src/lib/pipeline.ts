@@ -34,7 +34,6 @@ import {
 import { eq, and, asc, sql } from "drizzle-orm";
 import { runProjectManager } from "@/lib/agents/project-manager";
 import { runReviewer } from "@/lib/agents/reviewer";
-import { runImprover } from "@/lib/agents/improver";
 import { runManager } from "@/lib/agents/manager";
 import {
   runDeveloper,
@@ -71,7 +70,6 @@ import { runContractDesigner } from "@/lib/agents/contract-designer";
 import {
   checkTypeScriptSyntax,
   checkTypeScriptSemantics,
-  extractExportSignatures,
 } from "@/lib/ops/compiler";
 import { validateOutput, autoRepairOutput } from "@/lib/validate";
 import { locateWindows, hashString, LocateCandidate } from "@/lib/locator";
@@ -85,7 +83,6 @@ import {
   updateLedgerItem,
   initLedger,
   finalizeLedger,
-  LedgerItemStatus,
 } from "@/lib/ledger";
 import { runTests, getFirstFailure, TestRunResult } from "@/lib/test-runner";
 import { callOllama as callOllamaFn } from "@/lib/ollama";
@@ -3002,6 +2999,7 @@ export default function Component() {
           failure,
           currentComponent,
           currentTest,
+          primaryFile,
         );
         if (testFixed) {
           testResult = runTests(this.projectId, testFileName);
@@ -3076,6 +3074,7 @@ export default function Component() {
             failure,
             repaired,
             fs.readFileSync(testPath, "utf-8"),
+            primaryFile,
           );
           if (testFixed) {
             testResult = runTests(this.projectId, testFileName);
@@ -3298,8 +3297,10 @@ output: |
     failure: { name: string; error?: string },
     componentCode: string,
     testCode: string,
+    targetFile?: string,
   ): Promise<boolean> {
-    const primaryFile = this.manifest.find((f) => supportsTDD(f.path))?.path;
+    const primaryFile =
+      targetFile || this.manifest.find((f) => supportsTDD(f.path))?.path;
     if (!primaryFile) return false;
 
     const ext = primaryFile.split(".").pop()?.toLowerCase() || "";
