@@ -106,7 +106,7 @@ const MAX_TASKS = 200;
 const MAX_RETRIES = 2;
 const MAX_PARSE_RETRIES = 2;
 /** Max bullet points per file spec — keeps Developer prompt short */
-const MAX_REQUIREMENTS = 6;
+const MAX_REQUIREMENTS = 4;
 /** Max features the Manager can produce per epic */
 const MAX_SUBTASKS = 2;
 /** Max epics from PM */
@@ -1450,7 +1450,7 @@ export default function Component() {
         const manifestLines = this.manifest
           .map((m) => `  - ${m.path}: ${m.description}`)
           .join("\n");
-        userMessage += `\n\nFILE ARCHITECTURE (all files in this project):\n${manifestLines}\n\nYou are writing: ${filePath}\nWrite it for its role above — NOT as a standalone app. Use props/callbacks for data that comes from a parent. Import from sibling files when they are listed in EXPORTS AVAILABLE.`;
+        userMessage += `\n\nFILE ARCHITECTURE (all files in this project):\n${manifestLines}\n\nYou are writing: ${filePath}\nWrite it for its role above — NOT as a standalone app. Use props/callbacks for data that comes from a parent. Import from sibling files when they are listed in SIBLING FILES.`;
       }
 
       // Inject the skeleton on every step — not just step 0.
@@ -1501,14 +1501,12 @@ export default function Component() {
           Pipeline.DEFAULT_SPEC_TAG,
         );
 
-        // Always inject export signatures of all completed sibling files —
-        // compact, authoritative, prevents the model from re-implementing
-        // already-defined components/types. (Improvement 4.)
-        //
-        // Source of truth: any sibling file that exists on disk. Earlier this
-        // was keyed on fileContextSummaries, but the summariser is best-effort
-        // and silently fails on small models — leaving siblings invisible.
-        const allSiblingSignatures: string[] = [];
+        // Inject actual first-35-lines of completed sibling files.
+        // Small models pattern-match concrete code far better than abstract
+        // type signatures — seeing the real props interface and import line
+        // tells the model exactly how to use the sibling.
+        // Cap at 2 siblings × 35 lines ≈ ~3000 chars to avoid context bloat.
+        const completedSiblings: string[] = [];
         const siblingPaths = new Set<string>([
           ...this.manifest.map((m) => m.path),
           ...Object.keys(this.fileContextSummaries),
@@ -1517,35 +1515,18 @@ export default function Component() {
           if (siblingPath === filePath) continue;
           const siblingDiskPath = path.join(outDir, siblingPath);
           if (!fs.existsSync(siblingDiskPath)) continue;
-          const code = fs.readFileSync(siblingDiskPath, "utf-8");
-          const sigs = extractExportSignatures(siblingPath, code);
-          if (sigs.length === 0) continue;
-          // Compute the import specifier the next file should use.
-          // Strip extension and prefix with ./ for relative same-dir imports.
+          const code = fs.readFileSync(siblingDiskPath, "utf-8").trim();
+          // Skip empty scaffolds (< 100 chars means not yet written)
+          if (code.length < 100) continue;
           const importSpec = "./" + siblingPath.replace(/\.(tsx?|jsx?)$/, "");
-          const names = sigs
-            .map((s) => {
-              const m = s.match(
-                /export\s+(?:default\s+)?(?:function|const|class|interface|type)\s+([A-Za-z_$][\w$]*)/,
-              );
-              return m?.[1];
-            })
-            .filter(Boolean) as string[];
-          const importHint = names.length
-            ? `  // import: import { ${names.join(", ")} } from "${importSpec}";`
-            : "";
-          allSiblingSignatures.push(
-            `// ${siblingPath}\n${sigs.map((s) => `  ${s}`).join("\n")}${importHint ? "\n" + importHint : ""}`,
+          const preview = code.split("\n").slice(0, 35).join("\n");
+          completedSiblings.push(
+            `// ${siblingPath} — import with: import ComponentName from "${importSpec}"\n${preview}`,
           );
         }
-        if (allSiblingSignatures.length > 0) {
-          // Cap total injected context so large projects don't blow the prompt.
-          const MAX_SIG_CHARS = 4000;
-          let joined = allSiblingSignatures.join("\n");
-          if (joined.length > MAX_SIG_CHARS) {
-            joined = joined.slice(0, MAX_SIG_CHARS) + "\n  // ... (truncated)";
-          }
-          userMessage += `\n\nEXPORTS AVAILABLE FROM SIBLING FILES — import these instead of re-defining them:\n${joined}`;
+        if (completedSiblings.length > 0) {
+          const toShow = completedSiblings.slice(0, 2);
+          userMessage += `\n\nSIBLING FILES ALREADY WRITTEN — import and use these instead of re-implementing their logic:\n${toShow.join("\n\n")}`;
         }
 
         if (isDefaultSpec) {
@@ -1770,6 +1751,7 @@ export default function Component() {
           this.model,
           stepUserMessage,
           filePath,
+          this.manifest.find((m) => m.path === filePath)?.description,
         );
 
         if (!result.block) {

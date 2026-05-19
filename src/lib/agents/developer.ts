@@ -10,22 +10,84 @@ import { parseTTM, ResultBlock } from "@/lib/protocol";
  * and forwards to Ollama.
  */
 
+/**
+ * Classify a file's role from its manifest description so we can show
+ * the right scaffold. Small models pattern-match scaffolds — the shape
+ * of the example IS the instruction.
+ */
+function detectRole(description: string): "leaf" | "root" | "generic" {
+  const d = description.toLowerCase();
+  // Leaf: renders one item, receives everything via props
+  if (
+    /\b(single|individual|one |per.item|each item|card item|list item|row|cell|entry|badge|chip|tag)\b/.test(
+      d,
+    ) ||
+    /\b(button component|icon component|display component|renders? (a |an |one |single )|shows? (a |an |one |single ))\b/.test(
+      d,
+    )
+  )
+    return "leaf";
+  // Root / container: owns state, imports and wires children
+  if (
+    /\b(main|app|root|layout|page|container|board|manages|holds state|composes|coordinates|orchestrat|all (card|column|item|tab)|state for|wires?)\b/.test(
+      d,
+    )
+  )
+    return "root";
+  return "generic";
+}
+
 /** Generate a system prompt appropriate for the given file type */
-function getSystemPrompt(filePath: string): string {
+function getSystemPrompt(filePath: string, manifestDescription?: string): string {
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
 
   switch (ext) {
     case "tsx":
-    case "jsx":
-      return `You are filling in a React component scaffold. Replace every TODO comment with working code. Keep the rest of the structure.
+    case "jsx": {
+      const role = manifestDescription ? detectRole(manifestDescription) : "generic";
 
-Scaffold to fill in:
-\`\`\`tsx
+      // Leaf: receives data/callbacks as props, renders one thing
+      const leafScaffold = `\`\`\`tsx
+import React from "react";
+
+interface Props {
+  // TODO: define what data and callbacks this component receives
+}
+
+export default function ComponentName({}: Props) {
+  // TODO: local event handlers that call callbacks from props
+
+  return (
+    <div style={{ fontFamily: "system-ui, sans-serif" }}>
+      {/* TODO: render using props — do NOT manage shared/list state here */}
+    </div>
+  );
+}
+\`\`\``;
+
+      // Root/container: owns state, imports and renders children
+      const rootScaffold = `\`\`\`tsx
+import React, { useState } from "react";
+// TODO: import ChildComponent from "./ChildComponent";
+
+export default function App() {
+  // TODO: useState for each piece of application state
+  // TODO: event handlers that update state and are passed down as callbacks
+
+  return (
+    <div style={{ fontFamily: "system-ui, sans-serif", padding: "2rem" }}>
+      {/* TODO: render child components, passing state + callbacks as props */}
+    </div>
+  );
+}
+\`\`\``;
+
+      // Generic: stateful standalone component
+      const genericScaffold = `\`\`\`tsx
 import React, { useState } from "react";
 
 export default function Component() {
-  // TODO: declare useState hooks for every piece of state mentioned in the requirements
-  // TODO: declare any derived values (e.g. computed totals)
+  // TODO: declare useState hooks for every piece of state
   // TODO: declare event handler functions that update state
 
   return (
@@ -36,18 +98,24 @@ export default function Component() {
     </div>
   );
 }
-\`\`\`
+\`\`\``;
+
+      const scaffold =
+        role === "leaf" ? leafScaffold : role === "root" ? rootScaffold : genericScaffold;
+
+      return `You are filling in a React component scaffold. Replace every TODO comment with working code. Keep the rest of the structure.
+
+Scaffold to fill in:
+${scaffold}
 
 Hard rules:
-- Replace the component name "Component" with one that matches the task.
+- Replace component/prop names with ones that match the task.
 - Inline styles ONLY: style={{ }}. No CSS imports.
 - ALL inputs MUST be controlled: value={state} + onChange={handler}.
 - Every event handler must do real work. NEVER use alert() or console.log() as the main action.
-- For TIMERS / real time-based behavior: use useEffect + setInterval/setTimeout + useRef to hold the interval ID. Cleanup in the useEffect return.
-- Every useState call MUST be inside the component that uses it.
-- Do NOT use class-based services, managers, or singletons.
-- Do NOT invent features not mentioned in the requirements (no loading spinners, no fetch calls, no toasts unless asked).
-- Only import from "react", "react-dom", or sibling files ("./Foo"). No npm packages.
+- For TIMERS: use useEffect + setInterval/setTimeout + useRef for the interval ID. Cleanup in return.
+- Only import from "react" or sibling files ("./Foo"). No npm packages.
+- If SIBLING FILES are listed in the user message, import from them — do NOT re-implement their logic.
 - Output ONLY code. No prose.
 
 Reply with EITHER format (both are accepted):
@@ -64,6 +132,7 @@ filePath: ${filePath}
 output: |
   (complete component code, no TODOs left)
 >>END`;
+    }
 
     case "ts":
       return `Write complete, working TypeScript code. Rules:
@@ -267,6 +336,7 @@ export async function runDeveloper(
   model: string,
   userMessage: string,
   filePath?: string,
+  manifestDescription?: string,
 ): Promise<{
   block: ResultBlock | null;
   raw: string;
@@ -274,7 +344,7 @@ export async function runDeveloper(
   tokens: number;
   durationMs: number;
 }> {
-  const systemPrompt = getSystemPrompt(filePath || "output.txt");
+  const systemPrompt = getSystemPrompt(filePath || "output.txt", manifestDescription);
   const fp = filePath || "output.txt";
 
   // Strong prefill: commit the model to the RESULT block structure so it can't
