@@ -151,6 +151,26 @@ function parseVitestJson(
   const tests: TestResult[] = [];
 
   for (const suite of json.testResults || []) {
+    // If the suite has a collection-time error with no assertion results,
+    // surface it as a crash so repairTestFile() can fix it.
+    if (
+      suite.testExecError &&
+      (!suite.assertionResults || suite.assertionResults.length === 0)
+    ) {
+      const errMsg =
+        suite.testExecError.message ||
+        suite.testExecError.stack ||
+        "Suite execution error";
+      return {
+        passed: 0,
+        failed: 0,
+        total: 0,
+        tests: [],
+        rawOutput: rawOutput.slice(0, 3000),
+        crashed: true,
+        crashError: errMsg.slice(0, 500),
+      };
+    }
     for (const test of suite.assertionResults || []) {
       const name = test.ancestorTitles
         ? [...test.ancestorTitles, test.title].join(" > ")
@@ -227,6 +247,8 @@ interface VitestJsonOutput {
 interface VitestSuiteResult {
   assertionResults?: VitestTestResult[];
   name?: string;
+  testExecError?: { message?: string; stack?: string } | null;
+  status?: string;
 }
 
 interface VitestTestResult {

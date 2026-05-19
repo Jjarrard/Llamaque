@@ -2907,7 +2907,7 @@ export default function Component() {
         `Tests crashed: ${testResult.crashError || "unknown error"}`,
       );
 
-      const repaired = await this.repairTestFile(testResult);
+      const repaired = await this.repairTestFile(testResult, primaryFile);
       if (repaired) {
         testResult = runTests(this.projectId, testFileName);
       }
@@ -3186,8 +3186,12 @@ export default function Component() {
    * Repair the test file when vitest crashes (syntax error, bad import, etc.).
    * Sends the crash error + test file to the LLM to fix.
    */
-  private async repairTestFile(crashResult: TestRunResult): Promise<boolean> {
-    const primaryFile = this.manifest.find((f) => supportsTDD(f.path))?.path;
+  private async repairTestFile(
+    crashResult: TestRunResult,
+    targetFile?: string,
+  ): Promise<boolean> {
+    const primaryFile =
+      targetFile || this.manifest.find((f) => supportsTDD(f.path))?.path;
     if (!primaryFile) return false;
 
     const ext = primaryFile.split(".").pop()?.toLowerCase() || "";
@@ -3807,9 +3811,7 @@ output: |
           "QA",
           `Round ${round}: ${resolvedFile} has been attempted ${fileTotAttempts} times — skipping to avoid loop`,
         );
-        previousFixes.push(
-          `${problem} (skipped — file attempt cap reached)`,
-        );
+        previousFixes.push(`${problem} (skipped — file attempt cap reached)`);
         continue;
       }
       fileTotalAttempts.set(resolvedFile, fileTotAttempts + 1);
