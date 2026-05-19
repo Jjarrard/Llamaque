@@ -1125,7 +1125,8 @@ export default function Component() {
       if (!spec || spec.requirements.length === 0) continue;
       if (supportsTDD(filePath)) {
         try {
-          await this.generateTests(spec.requirements, filePath);
+          const manifestDesc = this.manifest.find((m) => m.path === filePath)?.description;
+          await this.generateTests(spec.requirements, filePath, manifestDesc);
           testsGenerated++;
         } catch (err) {
           // A single file failing to generate tests must not crash the pipeline.
@@ -1539,14 +1540,16 @@ export default function Component() {
           const exportMatch = code.match(
             /export\s+default\s+(?:function|class)\s+(\w+)/,
           );
-          const exportedName = exportMatch ? exportMatch[1] : siblingPath.replace(/\.\w+$/, "").replace(/[^a-zA-Z0-9]/g, "");
+          const exportedName = exportMatch
+            ? exportMatch[1]
+            : siblingPath.replace(/\.\w+$/, "").replace(/[^a-zA-Z0-9]/g, "");
           const preview = code.split("\n").slice(0, 35).join("\n");
           completedSiblings.push(
             `// ${siblingPath} — import with: import ${exportedName} from "${importSpec}"\n${preview}`,
           );
         }
         if (completedSiblings.length > 0) {
-          const toShow = completedSiblings.slice(0, 2);
+          const toShow = completedSiblings.slice(0, 3);
           userMessage += `\n\nSIBLING FILES ALREADY WRITTEN — import and use these instead of re-implementing their logic:\n${toShow.join("\n\n")}`;
         }
 
@@ -2726,7 +2729,7 @@ export default function Component() {
    * Called before code generation (TDD: tests first).
    * Only for file types that support TDD.
    */
-  private async generateTests(requirements: string[], targetFile?: string) {
+  private async generateTests(requirements: string[], targetFile?: string, manifestDescription?: string) {
     const file = targetFile || this.manifest[0]?.path || "output.txt";
     const ext = file.split(".").pop()?.toLowerCase() || "";
     const testFile = file.replace(
@@ -2761,6 +2764,7 @@ export default function Component() {
       // TDD runs before Execute — file is only a scaffold placeholder at this point.
       // Passing fileContent causes the model to copy the scaffold into the test output.
       undefined,
+      manifestDescription,
     );
 
     if (!result.tests) {
@@ -2780,6 +2784,7 @@ export default function Component() {
         file,
         exportName,
         undefined,
+        manifestDescription,
       );
     }
 

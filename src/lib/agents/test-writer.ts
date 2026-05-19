@@ -90,6 +90,19 @@ output: |
 >>END`;
 
 /**
+ * Detect if a manifest description implies a leaf (pure display) component.
+ * Leaf components receive all data via props — they should be tested differently
+ * from stateful container components.
+ */
+function isLeafComponent(description: string): boolean {
+  const d = description.toLowerCase();
+  return (
+    /\b(single|individual|one |per.item|each item|card item|list item|row|cell|entry|badge|chip|tag|display|show)\b/.test(d) ||
+    /\b(button component|renders? (a |an |one |single )|shows? (a |an |one |single ))\b/.test(d)
+  );
+}
+
+/**
  * Strip any component/non-test preamble the model emits before the vitest imports.
  * Tiny models sometimes copy the injected source code before writing the tests.
  */
@@ -107,7 +120,9 @@ function cleanTestOutput(code: string): string {
   if (indent) {
     return slice
       .split("\n")
-      .map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l.trimStart()))
+      .map((l) =>
+        l.startsWith(indent) ? l.slice(indent.length) : l.trimStart(),
+      )
       .join("\n")
       .trim();
   }
@@ -130,6 +145,7 @@ export async function runTestWriter(
   targetFile?: string,
   exportName?: string,
   fileContent?: string,
+  manifestDescription?: string,
 ): Promise<TestWriterResult> {
   const ext = targetFile?.split(".").pop()?.toLowerCase() || "tsx";
   const isReact = ext === "tsx" || ext === "jsx";
@@ -141,15 +157,12 @@ export async function runTestWriter(
   const testExt = isReact ? "tsx" : ext;
   const testFileName = `${baseName}.test.${testExt}`;
 
-  // Personalise the TSX system prompt with the actual export name
+  // Personalise the TSX system prompt: replace ALL "Component" placeholder
+  // occurrences with the real export name (import line, JSX tags, describe block, etc.)
   const tsxPrompt = isReact
-    ? TSX_SYSTEM_PROMPT.replace(
-        /import Component from/g,
-        `import ${componentName} from`,
-      )
-        .replace(/import Component\b/g, `import ${componentName}`)
-        .replace(/filePath: Component\.test\.tsx/g, `filePath: ${testFileName}`)
-        .replace(/\bComponent\b(?=\s*\()/g, componentName)
+    ? TSX_SYSTEM_PROMPT
+        .replace(/\bComponent\b/g, componentName)
+        .replace(/Component\.test\.tsx/g, testFileName)
     : JS_SYSTEM_PROMPT.replace(/__MODULE__/g, baseName);
 
   let userMessage = `Project: "${projectName}" — ${projectDescription}\n\n`;
@@ -157,11 +170,22 @@ export async function runTestWriter(
   userMessage += requirements.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   if (isReact) {
-    userMessage += `\n\nWrite 3-5 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`. Focus on:\n`;
-    userMessage += `- Does it render?\n`;
-    userMessage += `- Are key UI elements present?\n`;
-    userMessage += `- Do inputs accept and reflect typed values?\n`;
-    userMessage += `- Does the main flow work (fill in → submit → see result)?\n`;
+    const leaf = manifestDescription ? isLeafComponent(manifestDescription) : false;
+    if (leaf) {
+      userMessage += `\nComponent role: ${manifestDescription}\n`;
+      userMessage += `\nThis is a LEAF display component — it receives all data via props, it does NOT manage its own list state.\n`;
+      userMessage += `Write 3 tests for \`${componentName}\`. Infer required prop names from the Requirements above.\n`;
+      userMessage += `ALL render() calls MUST pass the required props, e.g. render(<${componentName} description="Coffee" amount={5} onDelete={() => {}} />).\n`;
+      userMessage += `- Test 1: renders without crashing (pass all required props)\n`;
+      userMessage += `- Test 2: the provided description/label text appears in the output\n`;
+      userMessage += `- Test 3: clicking the action button calls the callback prop (e.g. onDelete)\n`;
+    } else {
+      userMessage += `\n\nWrite 3-5 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`. Focus on:\n`;
+      userMessage += `- Does it render?\n`;
+      userMessage += `- Are key UI elements present?\n`;
+      userMessage += `- Do inputs accept and reflect typed values?\n`;
+      userMessage += `- Does the main flow work (fill in → submit → see result)?\n`;
+    }
   } else {
     userMessage += `\n\nWrite EXACTLY 3 tests for \`./${baseName}\`. Import using: import * as mod from "./${baseName}"\n`;
     userMessage += `Do NOT import from any other path. Do NOT write implementation code.\n`;
