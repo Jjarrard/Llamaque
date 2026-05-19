@@ -2953,6 +2953,10 @@ export default function ${compName}() {
 
     // Fix failures one at a time
     let round = 0;
+    // Track how many times repairSingleTest has been called for each test name.
+    // Once a test has been through MAX_TEST_REPAIR_ATTEMPTS repairs without
+    // resolving, drop it rather than looping indefinitely.
+    const testRepairCount = new Map<string, number>();
     while (round < Pipeline.MAX_TEST_FIX_ROUNDS && !this.aborted) {
       round++;
 
@@ -3051,18 +3055,28 @@ export default function ${compName}() {
           `Round ${round}: Tests crashed after fix — reverting`,
         );
         await this.writeOutputFile(primaryFile, currentComponent);
-        // The test might have expectations that don't match the component
-        // (e.g. wrong placeholder text, wrong role query). Try repairing the
-        // test before giving up — same path as "didn't reduce failures".
-        const testFixed = await this.repairSingleTest(
-          failure,
-          currentComponent,
-          fs.readFileSync(testPath, "utf-8"),
-          primaryFile,
-        );
-        if (testFixed) {
-          testResult = runTests(this.projectId, testFileName);
-          continue;
+        // The test might have wrong expectations. Try repairing it, but only
+        // up to MAX_TEST_REPAIR_ATTEMPTS times per test name to avoid spinning.
+        const repairs = testRepairCount.get(failure.name) ?? 0;
+        if (repairs < Pipeline.MAX_TEST_REPAIR_ATTEMPTS) {
+          testRepairCount.set(failure.name, repairs + 1);
+          // Re-read the test after the crash (it may have been modified by the failed fix)
+          const freshTestCode = fs.readFileSync(testPath, "utf-8");
+          const testFixed = await this.repairSingleTest(
+            failure,
+            currentComponent,
+            freshTestCode,
+            primaryFile,
+          );
+          if (testFixed) {
+            testResult = runTests(this.projectId, testFileName);
+            continue;
+          }
+        } else {
+          await this.log(
+            "TDD",
+            `Test "${failure.name}" repair limit reached — dropping`,
+          );
         }
         testResult.tests = testResult.tests.filter(
           (t) => t.name !== failure.name,
@@ -3088,23 +3102,35 @@ export default function ${compName}() {
           devResult.prompt,
           devResult.raw,
         );
-        // If the same test is still failing after 2 component fix attempts,
-        // the test itself might be bad — remove it
-        if (
-          round >= 2 &&
-          newResult.tests.find(
-            (t) => t.name === failure.name && t.status === "fail",
-          )
-        ) {
-          const testFixed = await this.repairSingleTest(
-            failure,
-            repaired,
-            fs.readFileSync(testPath, "utf-8"),
-            primaryFile,
-          );
-          if (testFixed) {
-            testResult = runTests(this.projectId, testFileName);
-            continue;
+        // If the same test is still failing after component fix attempts,
+        // the test itself might be wrong — repair it (capped per test name)
+        const sameTestStillFailing = newResult.tests.find(
+          (t) => t.name === failure.name && t.status === "fail",
+        );
+        if (round >= 2 && sameTestStillFailing) {
+          const repairs = testRepairCount.get(failure.name) ?? 0;
+          if (repairs < Pipeline.MAX_TEST_REPAIR_ATTEMPTS) {
+            testRepairCount.set(failure.name, repairs + 1);
+            // Use fresh error from the latest run and fresh test content
+            const latestFailure = sameTestStillFailing as { name: string; error?: string };
+            const testFixed = await this.repairSingleTest(
+              latestFailure,
+              repaired,
+              fs.readFileSync(testPath, "utf-8"),
+              primaryFile,
+            );
+            if (testFixed) {
+              testResult = runTests(this.projectId, testFileName);
+              continue;
+            }
+          } else {
+            await this.log(
+              "TDD",
+              `Test "${failure.name}" repair limit reached — dropping`,
+            );
+            newResult.tests = newResult.tests.filter(
+              (t) => t.name !== failure.name,
+            );
           }
         }
         testResult = newResult;
@@ -3343,8 +3369,22 @@ output: |
       `Test "${failure.name}" may be wrong — attempting repair`,
     );
 
-    const REPAIR_PROMPT = `One test in this file always fails, even after fixing the code.
-The test is probably wrong. Fix the test so it correctly tests the actual behavior.
+    // Extract UI hints from the component so the model can fix wrong queries
+    // (e.g. getByRole("button", {name: /delete/i}) when the button says "×").
+    const componentHints: string[] = [];
+    const btnMatches = componentCode.match(/<button[^>]*>([^<]*)<\/button>/g) ?? [];
+    btnMatches.forEach((m) => {
+      const text = m.replace(/<[^>]+>/g, "").trim();
+      if (text) componentHints.push(`button text: "${text}"`);
+    });
+    const ariaLabels = componentCode.match(/aria-label=["']([^"']+)["']/g) ?? [];
+    ariaLabels.forEach((m) => componentHints.push(m));
+    const placeholders = componentCode.match(/placeholder=["']([^"']+)["']/g) ?? [];
+    placeholders.forEach((m) => componentHints.push(m));
+
+    const REPAIR_PROMPT = `One test in this file always fails, even after multiple attempts to fix the code.
+The test assertions are probably wrong — they reference UI elements that don't exist as written.
+Fix the test so it correctly tests the actual behavior of the component.
 If the test is testing something impossible, remove it.
 - Output ONLY code. No explanations.
 - Keep all other tests unchanged.
@@ -3359,7 +3399,10 @@ output: |
 
     let userMessage = `Failing test: "${failure.name}"\n`;
     userMessage += `Error: ${(failure.error || "unknown").slice(0, 500)}\n\n`;
-    userMessage += `Code export and key elements:\n${this.truncateForPrompt(componentCode, 40)}\n\n`;
+    if (componentHints.length > 0) {
+      userMessage += `Actual UI elements in the component:\n${componentHints.map((h) => `  - ${h}`).join("\n")}\n\n`;
+    }
+    userMessage += `Component code (key exports):\n${this.truncateForPrompt(componentCode, 40)}\n\n`;
     userMessage += `Current test file:\n${this.truncateForPrompt(testCode, 60)}\n\n`;
     userMessage += `Fix or remove the failing test. Keep all passing tests.`;
 
