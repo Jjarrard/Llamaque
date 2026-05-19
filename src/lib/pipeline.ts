@@ -3731,6 +3731,9 @@ output: |
     // we cap at 3 attempts total — any deeper looping means we can't solve it.
     const fileTotalAttempts = new Map<string, number>();
     const MAX_FILE_TOTAL_ATTEMPTS = 3;
+    // Content-hash history per file. If applying a fix would restore the file
+    // to a previously-seen state (oscillation), the fix is rejected.
+    const fileContentHashes = new Map<string, Set<string>>();
     let round = 0;
 
     while (round < Pipeline.MAX_ITERATIVE_QA_ROUNDS && !this.aborted) {
@@ -3874,18 +3877,29 @@ output: |
             ? checkTypeScriptSyntax(resolvedFile, editRepaired)
             : [];
         if (editValidation.valid && editSyntaxErrors.length === 0) {
-          await this.writeOutputFile(resolvedFile, editRepaired);
-          await this.log(
-            "QA",
-            `Round ${round}: Surgical fix in ${resolvedFile} lines ${editResult.block.startLine}–${editResult.block.endLine} (${editResult.tokens} tokens)`,
-            undefined,
-            editResult.prompt,
-            editResult.raw,
-          );
-          previousFixes.push(
-            `${problem} → APPLIED: ${fix} (surgically in ${resolvedFile})`,
-          );
-          fixed = true;
+          // Oscillation guard: reject if this content was seen before
+          const fp = (c: string) => `${c.length}:${c.slice(0, 200)}`;
+          const seenHashes = fileContentHashes.get(resolvedFile) ?? new Set<string>();
+          if (seenHashes.has(fp(editRepaired))) {
+            await this.log("QA", `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`);
+            previousFixes.push(`${problem} (skipped — oscillation detected)`);
+            fileFailCount.set(resolvedFile, (fileFailCount.get(resolvedFile) ?? 0) + 1);
+          } else {
+            seenHashes.add(fp(existingContent));
+            fileContentHashes.set(resolvedFile, seenHashes);
+            await this.writeOutputFile(resolvedFile, editRepaired);
+            await this.log(
+              "QA",
+              `Round ${round}: Surgical fix in ${resolvedFile} lines ${editResult.block.startLine}–${editResult.block.endLine} (${editResult.tokens} tokens)`,
+              undefined,
+              editResult.prompt,
+              editResult.raw,
+            );
+            previousFixes.push(
+              `${problem} → APPLIED: ${fix} (surgically in ${resolvedFile})`,
+            );
+            fixed = true;
+          }
         } else {
           const reason = !editValidation.valid
             ? editValidation.reason!
@@ -3927,15 +3941,28 @@ output: |
             ? checkTypeScriptSyntax(resolvedFile, repaired)
             : [];
         if (validation.valid && rewriteSyntaxErrors.length === 0) {
-          await this.writeOutputFile(resolvedFile, repaired);
-          await this.log(
-            "QA",
-            `Round ${round}: Fixed ${resolvedFile} (${devResult.tokens} tokens)`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-          previousFixes.push(`${problem} → APPLIED: ${fix} (full rewrite in ${resolvedFile})`);
+          // Oscillation guard: reject if this content was seen before
+          const fp = (c: string) => `${c.length}:${c.slice(0, 200)}`;
+          const seenHashesFull = fileContentHashes.get(resolvedFile) ?? new Set<string>();
+          if (seenHashesFull.has(fp(repaired))) {
+            await this.log("QA", `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`);
+            previousFixes.push(`${problem} (skipped — oscillation detected)`);
+            fileFailCount.set(resolvedFile, (fileFailCount.get(resolvedFile) ?? 0) + 1);
+          } else {
+            seenHashesFull.add(fp(existingContent));
+            fileContentHashes.set(resolvedFile, seenHashesFull);
+            await this.writeOutputFile(resolvedFile, repaired);
+            await this.log(
+              "QA",
+              `Round ${round}: Fixed ${resolvedFile} (${devResult.tokens} tokens)`,
+              undefined,
+              devResult.prompt,
+              devResult.raw,
+            );
+            previousFixes.push(
+              `${problem} → APPLIED: ${fix} (full rewrite in ${resolvedFile})`,
+            );
+          }
         } else {
           const reason = !validation.valid
             ? validation.reason!
