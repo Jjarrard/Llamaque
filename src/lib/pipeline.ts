@@ -3828,7 +3828,7 @@ output: |
 
     /** Run tests for the given source file (if a test file exists).
      *  Returns true if tests pass (or no test file), false if they regress. */
-    const qaRunTests = (srcFile: string): boolean => {
+    const qaRunTests = (srcFile: string, baselineFailures: number): boolean => {
       const ext = srcFile.split(".").pop()?.toLowerCase() || "";
       const testFile = srcFile.replace(
         /\.\w+$/,
@@ -3836,7 +3836,24 @@ output: |
       );
       if (!fs.existsSync(path.join(qaOutDir, testFile))) return true;
       const result = runTests(this.projectId, testFile);
-      return !result.crashed && result.failed === 0;
+      // Revert only if the fix caused a crash or made more tests fail.
+      // Tests that were already failing before QA are expected and must not
+      // cause every fix to be rejected.
+      if (result.crashed) return false;
+      if (result.failed > baselineFailures) return false;
+      return true;
+    };
+
+    /** Snapshot test failures for a file before applying a QA fix. */
+    const qaTestBaseline = (srcFile: string): number => {
+      const ext = srcFile.split(".").pop()?.toLowerCase() || "";
+      const testFile = srcFile.replace(
+        /\.\w+$/,
+        `.test.${ext === "tsx" || ext === "jsx" ? "tsx" : ext}`,
+      );
+      if (!fs.existsSync(path.join(qaOutDir, testFile))) return 0;
+      const result = runTests(this.projectId, testFile);
+      return result.crashed ? 0 : result.failed;
     };
 
     let round = 0;
@@ -3945,6 +3962,10 @@ output: |
         continue;
       }
 
+      // Snapshot test failures before touching the file so the regression guard
+      // can compare "before vs. after" instead of "0 vs. failures".
+      const baselineFailures = qaTestBaseline(resolvedFile);
+
       // ── Attempt 1: Surgical edit (touch only the affected lines) ──
       let fixed = false;
       const lineHint = result.issue.line;
@@ -4000,9 +4021,9 @@ output: |
             seenHashes.add(fp(existingContent));
             fileContentHashes.set(resolvedFile, seenHashes);
             await this.writeOutputFile(resolvedFile, editRepaired);
-            // Regression guard: if tests were passing before the fix, make sure
-            // they still pass. If they broke, revert and treat as a failed fix.
-            if (!qaRunTests(resolvedFile)) {
+            // Regression guard: revert if the fix made tests crash or increased
+            // the failure count relative to the pre-fix baseline.
+            if (!qaRunTests(resolvedFile, baselineFailures)) {
               await this.writeOutputFile(resolvedFile, existingContent);
               await this.log(
                 "QA",
@@ -4086,8 +4107,9 @@ output: |
             seenHashesFull.add(fp(existingContent));
             fileContentHashes.set(resolvedFile, seenHashesFull);
             await this.writeOutputFile(resolvedFile, repaired);
-            // Regression guard: revert if tests broke after the fix.
-            if (!qaRunTests(resolvedFile)) {
+            // Regression guard: revert if the fix made tests crash or increased
+            // the failure count relative to the pre-fix baseline.
+            if (!qaRunTests(resolvedFile, baselineFailures)) {
               await this.writeOutputFile(resolvedFile, existingContent);
               await this.log(
                 "QA",
