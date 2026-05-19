@@ -94,12 +94,24 @@ output: |
  * Tiny models sometimes copy the injected source code before writing the tests.
  */
 function cleanTestOutput(code: string): string {
-  // Find where the vitest import begins — strip everything before it
-  const vitestIdx = code.search(/^import\s+[^'"]*from\s+["']vitest["']/m);
-  if (vitestIdx > 0) {
-    return code.slice(vitestIdx).trim();
+  // Find where the vitest import begins — strip everything before it.
+  // Allow optional leading whitespace: YAML block scalars ("output: |") indent
+  // lines by 2 spaces, which breaks ^import matching.
+  const vitestIdx = code.search(/^[ \t]*import\s+[^'"]*from\s+["']vitest["']/m);
+  if (vitestIdx < 0) return code;
+
+  const slice = vitestIdx > 0 ? code.slice(vitestIdx).trim() : code;
+
+  // Strip common leading indent (e.g. 2-space YAML indentation on every line)
+  const indent = slice.match(/^([ \t]+)/)?.[1] ?? "";
+  if (indent) {
+    return slice
+      .split("\n")
+      .map((l) => (l.startsWith(indent) ? l.slice(indent.length) : l.trimStart()))
+      .join("\n")
+      .trim();
   }
-  return code;
+  return slice;
 }
 
 export interface TestWriterResult {
