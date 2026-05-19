@@ -1524,15 +1524,25 @@ export default function Component() {
         ]);
         for (const siblingPath of siblingPaths) {
           if (siblingPath === filePath) continue;
+          // Skip files already shown in the "FILES YOU MUST IMPORT FROM" block
+          // to avoid injecting the same content twice.
+          if (plannedImports.includes(siblingPath)) continue;
           const siblingDiskPath = path.join(outDir, siblingPath);
           if (!fs.existsSync(siblingDiskPath)) continue;
           const code = fs.readFileSync(siblingDiskPath, "utf-8").trim();
           // Skip empty scaffolds (< 100 chars means not yet written)
           if (code.length < 100) continue;
           const importSpec = "./" + siblingPath.replace(/\.(tsx?|jsx?)$/, "");
+          // Extract the real exported name so the model gets a correct import
+          // hint rather than the "ComponentName" placeholder that small models
+          // copy literally: e.g. "import ComponentName from './KanbanColumn'"
+          const exportMatch = code.match(
+            /export\s+default\s+(?:function|class)\s+(\w+)/,
+          );
+          const exportedName = exportMatch ? exportMatch[1] : siblingPath.replace(/\.\w+$/, "").replace(/[^a-zA-Z0-9]/g, "");
           const preview = code.split("\n").slice(0, 35).join("\n");
           completedSiblings.push(
-            `// ${siblingPath} — import with: import ComponentName from "${importSpec}"\n${preview}`,
+            `// ${siblingPath} — import with: import ${exportedName} from "${importSpec}"\n${preview}`,
           );
         }
         if (completedSiblings.length > 0) {

@@ -38,13 +38,24 @@ function detectRole(description: string): "leaf" | "root" | "generic" {
 }
 
 /** Generate a system prompt appropriate for the given file type */
-function getSystemPrompt(filePath: string, manifestDescription?: string): string {
+function getSystemPrompt(
+  filePath: string,
+  manifestDescription?: string,
+): string {
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
 
   switch (ext) {
     case "tsx":
     case "jsx": {
-      const role = manifestDescription ? detectRole(manifestDescription) : "generic";
+      const role = manifestDescription
+        ? detectRole(manifestDescription)
+        : "generic";
+
+      // Derive the component function name from the file path.
+      // e.g. KanbanColumn.tsx → KanbanColumn, app.tsx → App
+      const baseName = filePath.split("/").pop()?.replace(/\.\w+$/, "") ?? "Component";
+      const componentName =
+        baseName.charAt(0).toUpperCase() + baseName.slice(1);
 
       // Leaf: receives data/callbacks as props, renders one thing
       const leafScaffold = `\`\`\`tsx
@@ -54,7 +65,7 @@ interface Props {
   // TODO: define what data and callbacks this component receives
 }
 
-export default function ComponentName({}: Props) {
+export default function ${componentName}({}: Props) {
   // TODO: local event handlers that call callbacks from props
 
   return (
@@ -70,7 +81,7 @@ export default function ComponentName({}: Props) {
 import React, { useState } from "react";
 // TODO: import ChildComponent from "./ChildComponent";
 
-export default function App() {
+export default function ${componentName}() {
   // TODO: useState for each piece of application state
   // TODO: event handlers that update state and are passed down as callbacks
 
@@ -86,7 +97,7 @@ export default function App() {
       const genericScaffold = `\`\`\`tsx
 import React, { useState } from "react";
 
-export default function Component() {
+export default function ${componentName}() {
   // TODO: declare useState hooks for every piece of state
   // TODO: declare event handler functions that update state
 
@@ -101,7 +112,11 @@ export default function Component() {
 \`\`\``;
 
       const scaffold =
-        role === "leaf" ? leafScaffold : role === "root" ? rootScaffold : genericScaffold;
+        role === "leaf"
+          ? leafScaffold
+          : role === "root"
+            ? rootScaffold
+            : genericScaffold;
 
       return `You are filling in a React component scaffold. Replace every TODO comment with working code. Keep the rest of the structure.
 
@@ -109,7 +124,7 @@ Scaffold to fill in:
 ${scaffold}
 
 Hard rules:
-- Replace component/prop names with ones that match the task.
+- Keep the function name \`${componentName}\` — do NOT rename it.
 - Inline styles ONLY: style={{ }}. No CSS imports.
 - ALL inputs MUST be controlled: value={state} + onChange={handler}.
 - Every event handler must do real work. NEVER use alert() or console.log() as the main action.
@@ -344,7 +359,10 @@ export async function runDeveloper(
   tokens: number;
   durationMs: number;
 }> {
-  const systemPrompt = getSystemPrompt(filePath || "output.txt", manifestDescription);
+  const systemPrompt = getSystemPrompt(
+    filePath || "output.txt",
+    manifestDescription,
+  );
   const fp = filePath || "output.txt";
 
   // Strong prefill: commit the model to the RESULT block structure so it can't
