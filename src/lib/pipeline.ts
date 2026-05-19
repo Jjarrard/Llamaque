@@ -1445,7 +1445,7 @@ export default function Component() {
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
 
       if (hasContent) {
-        userMessage += `Current ${filePath}:\n${this.truncateForPrompt(currentContent, 100)}\n\n`;
+        userMessage += `Current ${filePath}:\n${currentContent}\n\n`;
         userMessage += `ENHANCE the file above. Keep ALL existing code intact. Add ONLY this feature:\n- ${req}\n\nWrite the COMPLETE updated file with the new feature added.`;
       } else {
         userMessage += `Write the complete ${filePath} file implementing this feature:\n- ${req}`;
@@ -5139,7 +5139,7 @@ output: |
       const targetExports = [...getExports(targetContent)].join(", ");
 
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${importingFile}:\n${this.truncateForPrompt(importingContent, 80)}\n\n`;
+      userMessage += `Current ${importingFile}:\n${importingContent}\n\n`;
       userMessage += `INTEGRATION ERROR: this file imports { ${missingNames.join(", ")} } from '${targetFile}', but ${targetFile} only exports: ${targetExports || "(nothing)"}\n\n`;
       userMessage += `Fix the import in ${importingFile} to only use what ${targetFile} actually exports. Rewrite the COMPLETE ${importingFile} file.`;
       userMessage = this.withCustomInstructions(userMessage);
