@@ -3051,6 +3051,19 @@ export default function ${compName}() {
           `Round ${round}: Tests crashed after fix — reverting`,
         );
         await this.writeOutputFile(primaryFile, currentComponent);
+        // The test might have expectations that don't match the component
+        // (e.g. wrong placeholder text, wrong role query). Try repairing the
+        // test before giving up — same path as "didn't reduce failures".
+        const testFixed = await this.repairSingleTest(
+          failure,
+          currentComponent,
+          fs.readFileSync(testPath, "utf-8"),
+          primaryFile,
+        );
+        if (testFixed) {
+          testResult = runTests(this.projectId, testFileName);
+          continue;
+        }
         testResult.tests = testResult.tests.filter(
           (t) => t.name !== failure.name,
         );
@@ -4198,11 +4211,17 @@ output: |
 
         rewriteMsg = this.withCustomInstructions(rewriteMsg);
 
-        const rewriteResult = await runDeveloper(this.model, rewriteMsg, resolved);
+        const rewriteResult = await runDeveloper(
+          this.model,
+          rewriteMsg,
+          resolved,
+        );
         if (rewriteResult.block) {
           const output = rewriteResult.block.output;
           const { repaired } = autoRepairOutput(output, resolved);
-          const rValidation = validateOutput(repaired, resolved, { allowScaffold: true });
+          const rValidation = validateOutput(repaired, resolved, {
+            allowScaffold: true,
+          });
           const rExt = (resolved.split(".").pop() ?? "").toLowerCase();
           const rSyntax =
             rValidation.valid && ["ts", "tsx", "js", "jsx"].includes(rExt)
