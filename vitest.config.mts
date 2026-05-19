@@ -5,8 +5,8 @@ export default defineConfig({
   test: {
     environment: "jsdom",
     globals: true,
-    // Tests are generated per-project in output/{id}/Component.test.tsx
-    include: ["output/**/Component.test.tsx"],
+    // Tests are generated per-project in output/{id}/*.test.tsx
+    include: ["output/**/*.test.{tsx,ts,jsx,js}"],
     setupFiles: ["./vitest.setup.mts"],
   },
   resolve: {

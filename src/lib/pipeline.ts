@@ -297,10 +297,11 @@ export class Pipeline {
 
     switch (ext) {
       case "tsx":
-      case "jsx":
+      case "jsx": {
+        const compName = file.path.replace(/\.\w+$/, "") || "Component";
         return `import React from "react";
 
-export default function Component() {
+export default function ${compName}() {
   return (
     <div style={{ fontFamily: "sans-serif", padding: "2rem" }}>
       <h1>${this.projectName}</h1>
@@ -308,6 +309,7 @@ export default function Component() {
   );
 }
 `;
+      }
       case "ts":
         return `// ${file.description}\n`;
       case "js":
