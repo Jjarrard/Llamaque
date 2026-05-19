@@ -20,9 +20,10 @@ Rules:
 - Import: import { render, screen, fireEvent } from "@testing-library/react"
 - Import the component: import Component from "./Component"
 - Use ONLY plain vitest assertions: expect(x).toBeTruthy(), expect(x).toBe(y) — do NOT use toBeInTheDocument or any jest-dom matcher
+- CRITICAL: If the component takes required props, you MUST pass them in every render() call. Look at the Requirements to infer prop shapes. Example: render(<Card card={{ id: "1", text: "test" }} onDelete={() => {}} />)
 - Write EXACTLY 3 tests:
-  1. renders without crashing: render(<Component />) — no assertion needed
-  2. key element exists: render then expect(screen.getByRole("button")).toBeTruthy()
+  1. renders without crashing: render(<Component ...requiredProps />) — no assertion needed
+  2. key element exists: render then expect(screen.getByRole("button") or getByText(...)).toBeTruthy()
   3. interaction works: fireEvent.click(button) then expect the visible output changed
 - Keep each test body under 5 lines
 - Output ONLY test code. Do NOT copy or repeat the source component code. No comments. No explanations.

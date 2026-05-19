@@ -31,7 +31,7 @@ export async function runQA(
 }> {
   // Truncate output if too long to keep context small
   const truncatedOutput =
-    output.length > 800 ? output.slice(0, 800) + "\n...(truncated)" : output;
+    output.length > 3000 ? output.slice(0, 3000) + "\n...(truncated)" : output;
 
   const userMessage = `task: ${taskDescription}\noutput: |\n  ${truncatedOutput.split("\n").join("\n  ")}`;
 

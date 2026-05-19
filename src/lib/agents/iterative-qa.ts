@@ -1,16 +1,16 @@
 import { callOllama } from "@/lib/ollama";
 
-const SYSTEM_PROMPT = `Find ONE bug or issue in this project output. Most important issue only.
-Check: broken logic, incomplete implementations, placeholder code,
-missing error handling, inconsistent data, structural problems.
-If it looks correct, reply: NO_ISSUES
+const SYSTEM_PROMPT = `Find ONE bug in this file. Most critical issue only.
+Check: broken logic, missing feature, placeholder code (TODO/FIXME), 
+undefined variable reference, wrong prop name, import that doesn't exist.
+If the file looks correct, reply: NO_ISSUES
 
 Reply:
 >>ISSUE
 file: (filename)
-line: (approximate line number where the issue is)
-problem: (what is wrong)
-fix: (how to fix it)
+line: (approximate line number)
+problem: (what is wrong — one sentence)
+fix: (how to fix it — one sentence)
 >>END`;
 
 export interface SingleIssue {
@@ -28,27 +28,47 @@ export interface IterativeQAResult {
   durationMs: number;
 }
 
+/**
+ * Inspect a SINGLE file for bugs. Sending one file at a time keeps the
+ * prompt small enough for 3-4B models to actually reason about the code
+ * rather than hallucinating issues from an overloaded context window.
+ *
+ * testFailure: if a vitest run just failed, pass the first error message
+ * so QA can focus on the actual broken assertion instead of guessing.
+ */
 export async function runIterativeQA(
   model: string,
   projectName: string,
   projectDescription: string,
   files: { path: string; content: string }[],
   previousFixes?: string[],
+  testFailure?: string,
+  focusFileIndex?: number,
 ): Promise<IterativeQAResult> {
-  const fileList = files
-    .map((f) => `--- ${f.path} ---\n${f.content}`)
-    .join("\n\n");
+  // Focus on one file per call. Rotate via focusFileIndex so each round
+  // examines a different file, covering the whole project over several rounds.
+  const idx = (focusFileIndex ?? 0) % files.length;
+  const focusFile = files[idx];
 
-  let userMessage = `Project: "${projectName}: ${projectDescription}"\n\n${fileList}\n\n`;
+  let userMessage = `Project: "${projectName}: ${projectDescription}"\n\n`;
+
+  if (testFailure) {
+    userMessage += `TEST FAILURE (focus on this):\n${testFailure.slice(0, 400)}\n\n`;
+  }
+
+  userMessage += `--- ${focusFile.path} ---\n${focusFile.content.slice(0, 4000)}\n\n`;
 
   if (previousFixes && previousFixes.length > 0) {
-    userMessage += `Already fixed in this pass (do NOT report these again):\n`;
-    userMessage += previousFixes.map((f, i) => `${i + 1}. ${f}`).join("\n");
+    userMessage += `Already fixed (do NOT report these again):\n`;
+    userMessage += previousFixes
+      .slice(-5)
+      .map((f, i) => `${i + 1}. ${f}`)
+      .join("\n");
     userMessage += "\n\n";
   }
 
   userMessage +=
-    "Find ONE bug or issue (or reply NO_ISSUES if everything looks good):";
+    "Find ONE bug in this file (or reply NO_ISSUES if it looks correct):";
 
   const { text, prompt, tokens, durationMs } = await callOllama(
     model,
@@ -72,7 +92,7 @@ export async function runIterativeQA(
   if (fileMatch && problemMatch && fixMatch) {
     return {
       issue: {
-        file: fileMatch[1].trim().replace(/['"]/, ""),
+        file: fileMatch[1].trim().replace(/['"]/g, ""),
         line: lineMatch ? parseInt(lineMatch[1], 10) : undefined,
         problem: problemMatch[1].trim(),
         fix: fixMatch[1].trim(),

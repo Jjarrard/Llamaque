@@ -96,16 +96,22 @@ export async function runPlanner(
   model: string,
   filePath: string,
   requirements: string[],
+  manifestDescription?: string,
+  contractSnippet?: string,
 ): Promise<string | null> {
   const ext = filePath.split(".").pop()?.toLowerCase() || "";
   const fileTypeLabel = FILE_TYPE_LABELS[ext] || "file";
   const systemPrompt = getSystemPrompt(ext);
 
-  const userMessage = `File: ${filePath} (${fileTypeLabel})
-Requirements:
-${requirements.map((r, i) => `${i + 1}. ${r}`).join("\n")}
-
-Reply with a >>PLAN block.`;
+  let userMessage = `File: ${filePath} (${fileTypeLabel})`;
+  if (manifestDescription) {
+    userMessage += `\nRole: ${manifestDescription}`;
+  }
+  userMessage += `\nRequirements:\n${requirements.map((r, i) => `${i + 1}. ${r}`).join("\n")}`;
+  if (contractSnippet) {
+    userMessage += `\n\nShared types (use these exact names):\n${contractSnippet}`;
+  }
+  userMessage += `\n\nReply with a >>PLAN block.`;
 
   try {
     const { text } = await callOllama(

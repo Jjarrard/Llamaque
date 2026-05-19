@@ -26,8 +26,18 @@ export async function runHolisticReview(
   projectDescription: string,
   files: { path: string; content: string }[],
 ): Promise<HolisticReviewResult> {
+  // Truncate each file to 80 lines so the total prompt stays within a 3-4B
+  // model's effective attention range. We only need structure and feature
+  // presence — not every line of implementation detail.
   const fileList = files
-    .map((f) => `--- ${f.path} ---\n${f.content}`)
+    .map((f) => {
+      const lines = f.content.split("\n");
+      const truncated =
+        lines.length > 80
+          ? lines.slice(0, 80).join("\n") + `\n...(${lines.length - 80} more lines)`
+          : f.content;
+      return `--- ${f.path} ---\n${truncated}`;
+    })
     .join("\n\n");
 
   const userMessage = `Original request: "${projectName}: ${projectDescription}"

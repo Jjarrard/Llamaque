@@ -1373,7 +1373,16 @@ export default function Component() {
     // Only runs for multi-requirement files where an outline is actually useful.
     let planOutline: string | null = null;
     if (requirements.length >= 2) {
-      planOutline = await runPlanner(this.model, filePath, requirements);
+      const manifestDesc = this.manifest.find(
+        (m) => m.path === filePath,
+      )?.description;
+      planOutline = await runPlanner(
+        this.model,
+        filePath,
+        requirements,
+        manifestDesc,
+        this.contractSnippet || undefined,
+      );
       if (planOutline) {
         await this.log(
           "PLAN",
@@ -3691,6 +3700,8 @@ output: |
         this.projectDescription,
         currentFiles,
         previousFixes.length > 0 ? previousFixes : undefined,
+        undefined,
+        round - 1, // rotate through files each round
       );
 
       if (!result.issue) {
