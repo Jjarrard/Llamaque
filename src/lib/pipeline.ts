@@ -148,6 +148,8 @@ export class Pipeline {
   private manifest: ManifestFile[] = [];
   /** Shared TypeScript type definitions produced by ContractDesigner (may be empty) */
   private contractSnippet: string = "";
+  /** Last test failure message from runTestQA, passed to iterativeQA for focused fixing */
+  private lastTestFailure: string | undefined = undefined;
   /** Per-file summaries produced after each file completes during Execute.
    * Injected into subsequent files' first Developer step as cross-file context. */
   private fileContextSummaries: Record<string, string> = {};
@@ -3064,6 +3066,11 @@ export default function Component() {
         "TDD",
         `Hit max fix rounds (${Pipeline.MAX_TEST_FIX_ROUNDS}) with ${testResult.failed} still failing`,
       );
+      // Store failure for iterativeQA so it can focus on the same root cause
+      const firstFail = getFirstFailure(testResult);
+      if (firstFail) {
+        this.lastTestFailure = `Test: "${firstFail.name}"\nError: ${(firstFail.error || "").slice(0, 300)}`;
+      }
     }
 
     await this.log(
@@ -3700,7 +3707,7 @@ output: |
         this.projectDescription,
         currentFiles,
         previousFixes.length > 0 ? previousFixes : undefined,
-        undefined,
+        round === 1 ? this.lastTestFailure : undefined, // give first round the test failure context
         round - 1, // rotate through files each round
       );
 

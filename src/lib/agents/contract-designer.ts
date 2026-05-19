@@ -68,31 +68,37 @@ Write 3-6 TypeScript type/interface definitions that these files will share.`;
       userMessage,
     );
 
-    // Strip any TTM block markers the model might emit, markdown fences,
-    // and blank lines. Keep only lines that look like complete one-line TS
-    // type definitions — discard multi-line block openers (e.g. "interface X {")
-    // because they arrive without a body and produce invalid TS fragments.
-    const snippet = text
-      .replace(/>>[\w]+/g, "")
-      .replace(/```[\w]*/g, "")
-      .split("\n")
-      .map((l) => l.trim())
-      .filter((l) => {
-        if (
-          !(
-            l.startsWith("type ") ||
-            l.startsWith("interface ") ||
-            l.startsWith("export type ") ||
-            l.startsWith("export interface ")
-          )
-        )
-          return false;
-        // Reject lines that open a block without closing it (multi-line fragment)
-        const opens = (l.match(/\{/g) || []).length;
-        const closes = (l.match(/\}/g) || []).length;
-        if (opens !== closes) return false;
-        return true;
-      })
+    // Strip TTM markers and markdown fences, then collapse multi-line
+    // interface/type blocks onto single lines before filtering.
+    // e.g. "interface Card {\n  id: string;\n}" → "interface Card { id: string; }"
+    // Without this, the per-line filter drops every multi-line interface
+    // (opening line has { without } → opens≠closes → silently discarded).
+    const cleaned = text.replace(/>>[\w]+/g, "").replace(/```[\w]*/g, "");
+
+    const TYPE_START =
+      /^(export\s+)?(interface|type)\s/;
+
+    const collapsedLines: string[] = [];
+    let buffer = "";
+    let depth = 0;
+    for (const rawLine of cleaned.split("\n")) {
+      const l = rawLine.trim();
+      if (!buffer) {
+        if (!TYPE_START.test(l)) continue; // skip non-type lines when not buffering
+      }
+      buffer += (buffer ? " " : "") + l;
+      depth +=
+        (l.match(/\{/g) || []).length - (l.match(/\}/g) || []).length;
+      if (depth <= 0) {
+        if (buffer) collapsedLines.push(buffer);
+        buffer = "";
+        depth = 0;
+      }
+    }
+    if (buffer) collapsedLines.push(buffer); // include unclosed block as-is
+
+    const snippet = collapsedLines
+      .filter((l) => TYPE_START.test(l))
       .slice(0, 6)
       .join("\n");
 
