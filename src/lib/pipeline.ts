@@ -3883,7 +3883,7 @@ output: |
             editResult.raw,
           );
           previousFixes.push(
-            `${problem} → surgically fixed in ${resolvedFile}`,
+            `${problem} → APPLIED: ${fix} (surgically in ${resolvedFile})`,
           );
           fixed = true;
         } else {
@@ -3935,7 +3935,7 @@ output: |
             devResult.prompt,
             devResult.raw,
           );
-          previousFixes.push(`${problem} → fixed in ${resolvedFile}`);
+          previousFixes.push(`${problem} → APPLIED: ${fix} (full rewrite in ${resolvedFile})`);
         } else {
           const reason = !validation.valid
             ? validation.reason!

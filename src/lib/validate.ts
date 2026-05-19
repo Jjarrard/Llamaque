@@ -36,6 +36,23 @@ export function autoRepairOutput(
     fixes.push("Stripped >> TTM line prefixes from code");
   }
 
+  // Strip YAML preamble emitted by models that wrap their output in a RESULT block.
+  // If the file starts with TTM metadata lines (filePath:, status:, output: |) followed
+  // by indented code, strip them and de-indent the code.
+  // e.g. "filePath: App.tsx\noutput: |\n  import React..." → "import React..."
+  if (/^[ \t]*(filePath|status):\s/m.test(code.split("\n")[0] || "")) {
+    const idx = code.search(/^[ \t]*(?:import|export|const|let|var|function|class|\/\/|\/\*|#)/m);
+    if (idx > 0) {
+      const slice = code.slice(idx);
+      // Strip common leading indent
+      const indent = slice.match(/^([ \t]+)/)?.[1] ?? "";
+      code = indent
+        ? slice.split("\n").map((l) => l.startsWith(indent) ? l.slice(indent.length) : l.trimStart()).join("\n").trim()
+        : slice.trim();
+      fixes.push("Stripped YAML TTM preamble (filePath/output: | block header)");
+    }
+  }
+
   // Strip markdown code fences (```tsx, ```javascript, ``` etc.)
   if (/^```\w*\s*$/m.test(code)) {
     code = code
