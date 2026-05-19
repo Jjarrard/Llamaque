@@ -53,7 +53,11 @@ function getSystemPrompt(
 
       // Derive the component function name from the file path.
       // e.g. KanbanColumn.tsx → KanbanColumn, app.tsx → App
-      const baseName = filePath.split("/").pop()?.replace(/\.\w+$/, "") ?? "Component";
+      const baseName =
+        filePath
+          .split("/")
+          .pop()
+          ?.replace(/\.\w+$/, "") ?? "Component";
       const componentName =
         baseName.charAt(0).toUpperCase() + baseName.slice(1);
 

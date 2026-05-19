@@ -34,7 +34,8 @@ export async function runHolisticReview(
       const lines = f.content.split("\n");
       const truncated =
         lines.length > 80
-          ? lines.slice(0, 80).join("\n") + `\n...(${lines.length - 80} more lines)`
+          ? lines.slice(0, 80).join("\n") +
+            `\n...(${lines.length - 80} more lines)`
           : f.content;
       return `--- ${f.path} ---\n${truncated}`;
     })

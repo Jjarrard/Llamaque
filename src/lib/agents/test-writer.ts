@@ -97,8 +97,12 @@ output: |
 function isLeafComponent(description: string): boolean {
   const d = description.toLowerCase();
   return (
-    /\b(single|individual|one |per.item|each item|card item|list item|row|cell|entry|badge|chip|tag|display|show)\b/.test(d) ||
-    /\b(button component|renders? (a |an |one |single )|shows? (a |an |one |single ))\b/.test(d)
+    /\b(single|individual|one |per.item|each item|card item|list item|row|cell|entry|badge|chip|tag|display|show)\b/.test(
+      d,
+    ) ||
+    /\b(button component|renders? (a |an |one |single )|shows? (a |an |one |single ))\b/.test(
+      d,
+    )
   );
 }
 
@@ -160,9 +164,10 @@ export async function runTestWriter(
   // Personalise the TSX system prompt: replace ALL "Component" placeholder
   // occurrences with the real export name (import line, JSX tags, describe block, etc.)
   const tsxPrompt = isReact
-    ? TSX_SYSTEM_PROMPT
-        .replace(/\bComponent\b/g, componentName)
-        .replace(/Component\.test\.tsx/g, testFileName)
+    ? TSX_SYSTEM_PROMPT.replace(/\bComponent\b/g, componentName).replace(
+        /Component\.test\.tsx/g,
+        testFileName,
+      )
     : JS_SYSTEM_PROMPT.replace(/__MODULE__/g, baseName);
 
   let userMessage = `Project: "${projectName}" — ${projectDescription}\n\n`;
@@ -170,7 +175,9 @@ export async function runTestWriter(
   userMessage += requirements.map((r, i) => `${i + 1}. ${r}`).join("\n");
 
   if (isReact) {
-    const leaf = manifestDescription ? isLeafComponent(manifestDescription) : false;
+    const leaf = manifestDescription
+      ? isLeafComponent(manifestDescription)
+      : false;
     if (leaf) {
       userMessage += `\nComponent role: ${manifestDescription}\n`;
       userMessage += `\nThis is a LEAF display component — it receives all data via props, it does NOT manage its own list state.\n`;

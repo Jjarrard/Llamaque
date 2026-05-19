@@ -1125,7 +1125,9 @@ export default function Component() {
       if (!spec || spec.requirements.length === 0) continue;
       if (supportsTDD(filePath)) {
         try {
-          const manifestDesc = this.manifest.find((m) => m.path === filePath)?.description;
+          const manifestDesc = this.manifest.find(
+            (m) => m.path === filePath,
+          )?.description;
           await this.generateTests(spec.requirements, filePath, manifestDesc);
           testsGenerated++;
         } catch (err) {
@@ -2684,7 +2686,12 @@ export default function Component() {
       return;
     }
 
-    const testsAllPassed = await this.runTestQA();
+    const tddFiles = this.manifest.filter((f) => supportsTDD(f.path));
+    let testsAllPassed = tddFiles.length > 0;
+    for (const tddFile of tddFiles) {
+      const passed = await this.runTestQA(tddFile.path);
+      if (!passed) testsAllPassed = false;
+    }
     await this.runHolisticReviewPass();
 
     if (testsAllPassed) {
@@ -2729,7 +2736,11 @@ export default function Component() {
    * Called before code generation (TDD: tests first).
    * Only for file types that support TDD.
    */
-  private async generateTests(requirements: string[], targetFile?: string, manifestDescription?: string) {
+  private async generateTests(
+    requirements: string[],
+    targetFile?: string,
+    manifestDescription?: string,
+  ) {
     const file = targetFile || this.manifest[0]?.path || "output.txt";
     const ext = file.split(".").pop()?.toLowerCase() || "";
     const testFile = file.replace(
@@ -2844,9 +2855,11 @@ export default function Component() {
    * If vitest itself crashes (bad test syntax), repair the test file first.
    * @returns true if all tests pass (or no test file exists), false if failures remain
    */
-  private async runTestQA(): Promise<boolean> {
+  private async runTestQA(targetFile?: string): Promise<boolean> {
     // Determine the primary code file and its test file
-    const primaryFile = this.manifest.find((f) => supportsTDD(f.path))?.path;
+    const primaryFile =
+      targetFile ||
+      this.manifest.find((f) => supportsTDD(f.path))?.path;
     if (!primaryFile) {
       await this.log(
         "TDD",
@@ -2884,7 +2897,7 @@ export default function Component() {
     await this.log("TDD", "Running tests...");
 
     // Fix import in test file to match the component's actual export name
-    await this.fixTestImport();
+    await this.fixTestImport(primaryFile);
 
     let testResult = runTests(this.projectId, testFileName);
 
@@ -3100,8 +3113,9 @@ export default function Component() {
    * Fix the test file import to match the code's actual exported function name.
    * The test-writer might import "Component" but the actual export could be different.
    */
-  private async fixTestImport() {
-    const primaryFile = this.manifest.find((f) => supportsTDD(f.path))?.path;
+  private async fixTestImport(targetFile?: string) {
+    const primaryFile =
+      targetFile || this.manifest.find((f) => supportsTDD(f.path))?.path;
     if (!primaryFile) return;
 
     const ext = primaryFile.split(".").pop()?.toLowerCase() || "";
@@ -4873,9 +4887,8 @@ output: |
       );
       await this.log("IMP", errorList);
 
-      const truncated = this.truncateForPrompt(content, 100);
       let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${file.path}:\n${truncated}\n\n`;
+      userMessage += `Current ${file.path}:\n${content}\n\n`;
       userMessage += `Fix these syntax errors and output the COMPLETE ${file.path}:\n${errorList}`;
       userMessage = this.withCustomInstructions(userMessage);
 

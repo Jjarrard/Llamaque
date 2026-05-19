@@ -75,8 +75,7 @@ Write 3-6 TypeScript type/interface definitions that these files will share.`;
     // (opening line has { without } → opens≠closes → silently discarded).
     const cleaned = text.replace(/>>[\w]+/g, "").replace(/```[\w]*/g, "");
 
-    const TYPE_START =
-      /^(export\s+)?(interface|type)\s/;
+    const TYPE_START = /^(export\s+)?(interface|type)\s/;
 
     const collapsedLines: string[] = [];
     let buffer = "";
@@ -87,8 +86,7 @@ Write 3-6 TypeScript type/interface definitions that these files will share.`;
         if (!TYPE_START.test(l)) continue; // skip non-type lines when not buffering
       }
       buffer += (buffer ? " " : "") + l;
-      depth +=
-        (l.match(/\{/g) || []).length - (l.match(/\}/g) || []).length;
+      depth += (l.match(/\{/g) || []).length - (l.match(/\}/g) || []).length;
       if (depth <= 0) {
         if (buffer) collapsedLines.push(buffer);
         buffer = "";
