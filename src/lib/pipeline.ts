@@ -2957,6 +2957,10 @@ export default function ${compName}() {
     // Once a test has been through MAX_TEST_REPAIR_ATTEMPTS repairs without
     // resolving, drop it rather than looping indefinitely.
     const testRepairCount = new Map<string, number>();
+    // Track consecutive validation failures per test: if the developer keeps
+    // producing syntactically-broken code for the same test, the test itself
+    // might be impossible — trigger repairSingleTest instead of spinning.
+    const validationFailStreak = new Map<string, number>();
     while (round < Pipeline.MAX_TEST_FIX_ROUNDS && !this.aborted) {
       round++;
 
@@ -3042,8 +3046,32 @@ export default function ${compName}() {
           devResult.prompt,
           devResult.raw,
         );
+        // Track consecutive validation failures for this test. After 2 failures
+        // the developer is stuck — the test might be impossible. Try repairing
+        // the test instead of continuing to generate broken component code.
+        const streak = (validationFailStreak.get(failure.name) ?? 0) + 1;
+        validationFailStreak.set(failure.name, streak);
+        if (streak >= 2) {
+          const repairs = testRepairCount.get(failure.name) ?? 0;
+          if (repairs < Pipeline.MAX_TEST_REPAIR_ATTEMPTS) {
+            testRepairCount.set(failure.name, repairs + 1);
+            validationFailStreak.set(failure.name, 0); // reset streak after repair
+            const testFixed = await this.repairSingleTest(
+              failure,
+              currentComponent,
+              fs.readFileSync(testPath, "utf-8"),
+              primaryFile,
+            );
+            if (testFixed) {
+              testResult = runTests(this.projectId, testFileName);
+              if (testResult.failed === 0) break;
+            }
+          }
+        }
         continue;
       }
+      // Reset streak on a valid fix attempt
+      validationFailStreak.set(failure.name, 0);
 
       // Write the fixed code and re-run tests
       await this.writeOutputFile(primaryFile, repaired);
@@ -3112,7 +3140,10 @@ export default function ${compName}() {
           if (repairs < Pipeline.MAX_TEST_REPAIR_ATTEMPTS) {
             testRepairCount.set(failure.name, repairs + 1);
             // Use fresh error from the latest run and fresh test content
-            const latestFailure = sameTestStillFailing as { name: string; error?: string };
+            const latestFailure = sameTestStillFailing as {
+              name: string;
+              error?: string;
+            };
             const testFixed = await this.repairSingleTest(
               latestFailure,
               repaired,
@@ -3372,14 +3403,17 @@ output: |
     // Extract UI hints from the component so the model can fix wrong queries
     // (e.g. getByRole("button", {name: /delete/i}) when the button says "×").
     const componentHints: string[] = [];
-    const btnMatches = componentCode.match(/<button[^>]*>([^<]*)<\/button>/g) ?? [];
+    const btnMatches =
+      componentCode.match(/<button[^>]*>([^<]*)<\/button>/g) ?? [];
     btnMatches.forEach((m) => {
       const text = m.replace(/<[^>]+>/g, "").trim();
       if (text) componentHints.push(`button text: "${text}"`);
     });
-    const ariaLabels = componentCode.match(/aria-label=["']([^"']+)["']/g) ?? [];
+    const ariaLabels =
+      componentCode.match(/aria-label=["']([^"']+)["']/g) ?? [];
     ariaLabels.forEach((m) => componentHints.push(m));
-    const placeholders = componentCode.match(/placeholder=["']([^"']+)["']/g) ?? [];
+    const placeholders =
+      componentCode.match(/placeholder=["']([^"']+)["']/g) ?? [];
     placeholders.forEach((m) => componentHints.push(m));
 
     const REPAIR_PROMPT = `One test in this file always fails, even after multiple attempts to fix the code.
