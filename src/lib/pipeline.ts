@@ -3415,13 +3415,31 @@ output: |
     const placeholders =
       componentCode.match(/placeholder=["']([^"']+)["']/g) ?? [];
     placeholders.forEach((m) => componentHints.push(m));
+    // Extract text+element patterns (e.g. <p>Label: <strong>{val}</strong></p>)
+    // so the repair model knows text is split and cannot be matched by getByText.
+    const splitTextPatterns =
+      componentCode.match(/<(?:p|span|div|h[1-6])[^>]*>[^<]+<(?:strong|span|em|b)[^>]*>/g) ?? [];
+    splitTextPatterns.forEach((m) => {
+      const label = m.replace(/<[^>]+>/g, "").trim();
+      if (label) componentHints.push(`split text (label + child element): "${label}..."`);
+    });
+
+    // Detect the specific split-text error to give a targeted hint
+    const isSplitTextError = (failure.error || "").includes(
+      "broken up by multiple elements",
+    );
 
     const REPAIR_PROMPT = `One test in this file always fails, even after multiple attempts to fix the code.
 The test assertions are probably wrong — they reference UI elements that don't exist as written.
 Fix the test so it correctly tests the actual behavior of the component.
 If the test is testing something impossible, remove it.
 - Output ONLY code. No explanations.
-- Keep all other tests unchanged.
+- Keep all other tests unchanged.${
+      isSplitTextError
+        ? `
+- CRITICAL: The error says text is "broken up by multiple elements". This means getByText() was used for text that spans a label + a child element (e.g. <p>Total: <strong>1</strong></p>). Fix the assertion to check the item by its own text: expect(screen.getByText('the item text')).toBeTruthy() or expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0). Do NOT use getByText() for any text that mixes a static label with a dynamic value.`
+        : ""
+    }
 
 Reply:
 >>RESULT

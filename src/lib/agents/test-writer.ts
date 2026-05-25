@@ -24,7 +24,7 @@ Rules:
 - Write EXACTLY 3 tests:
   1. renders without crashing: render(<Component ...requiredProps />) — no assertion needed
   2. key element exists: render then expect(screen.getByRole("button") or getByText(...)).toBeTruthy()
-  3. interaction works: fireEvent.click(button) then expect the visible output changed
+  3. interaction works: fireEvent.click(button) then assert the NEW ITEM APPEARS by its own text. Do NOT use getByText(/Label: value/) for text split across HTML child elements (e.g. "Total: <strong>1</strong>") — that ALWAYS FAILS. Instead check: expect(screen.getByText('the typed text')).toBeTruthy() or expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0).
 - Keep each test body under 5 lines
 - Output ONLY test code. Do NOT copy or repeat the source component code. No comments. No explanations.
 
@@ -168,10 +168,9 @@ export async function runTestWriter(
   // and describe-block names use the real export name (componentName).
   // Order matters: fix paths first, then test filename, then bare identifiers.
   const tsxPrompt = isReact
-    ? TSX_SYSTEM_PROMPT
-        .replace(/"\.\/Component"/g, `"./${baseName}"`)   // import path → filename
-        .replace(/Component\.test\.tsx/g, testFileName)  // test filename
-        .replace(/\bComponent\b/g, componentName)         // JSX tags / describe name
+    ? TSX_SYSTEM_PROMPT.replace(/"\.\/Component"/g, `"./${baseName}"`) // import path → filename
+        .replace(/Component\.test\.tsx/g, testFileName) // test filename
+        .replace(/\bComponent\b/g, componentName) // JSX tags / describe name
     : JS_SYSTEM_PROMPT.replace(/__MODULE__/g, baseName);
 
   let userMessage = `Project: "${projectName}" — ${projectDescription}\n\n`;
@@ -195,7 +194,7 @@ export async function runTestWriter(
       userMessage += `- Does it render?\n`;
       userMessage += `- Are key UI elements present?\n`;
       userMessage += `- Do inputs accept and reflect typed values?\n`;
-      userMessage += `- Does the main flow work (fill in → submit → see result)?\n`;
+      userMessage += `- Does the main flow work? Type text into the input, submit, then assert the TYPED TEXT appears using getByText('your typed text'). Do NOT assert a summary counter (e.g. getByText(/Total: 1/)) — that text is split across HTML elements and will always fail.\n`;
     }
   } else {
     userMessage += `\n\nWrite EXACTLY 3 tests for \`./${baseName}\`. Import using: import * as mod from "./${baseName}"\n`;
