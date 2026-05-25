@@ -69,8 +69,9 @@ export function checkTypeScriptSyntax(
     //   TS2448 — block-scoped variable used before declaration (let x = x;)
     //   TS2454 — variable used before being assigned
     //   TS2300 — duplicate identifier
+    //   TS2451 — cannot redeclare block-scoped variable (duplicate const in fn body)
     //   TS2695 — LHS is always a constant (often `let x = x` shadow)
-    const SAFE_SEMANTIC_CODES = new Set([2448, 2454, 2300, 2695, 2393]);
+    const SAFE_SEMANTIC_CODES = new Set([2448, 2454, 2300, 2451, 2695, 2393]);
     const semanticDiags = program
       .getSemanticDiagnostics(sourceFile)
       .filter((d) => SAFE_SEMANTIC_CODES.has(d.code));
