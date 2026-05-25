@@ -509,8 +509,8 @@ export default function ${compName}() {
       "architect",
       "decompose",
       "breakdown",
-      "tdd",
       "execute",
+      "tdd",
       "qa",
       "feedback",
     ];
@@ -700,14 +700,34 @@ export default function ${compName}() {
       return;
     }
 
-    // ── TDD + Execute ──
-    // TDD runs first (generate tests from requirements), then Execute writes
-    // the implementation. This is true TDD: tests define the contract,
-    // code fulfils it.
+    // ── Execute + TDD ──
+    // Execute runs first (write code from requirements), then TDD generates tests
+    // that use the real prop shapes from the written code. This eliminates prop-name
+    // mismatches that require costly test-repair rounds in QA.
     if (stage === "all" || stage === "tdd" || stage === "execute") {
       const fileSpecs = await this.prepareFileSpecs();
 
-      // ── TDD: generate test files ──
+      // ── Execute: write code ──
+      if (stage === "all" || stage === "execute") {
+        await this.emitStageStart("execute");
+        await this.log("SYS", "Executing — writing code for each file...");
+        await this.runExecutePhase(fileSpecs);
+        await this.markStageComplete("execute");
+        await this.runJudgePhase();
+
+        if (stage === "execute") {
+          await this.log("SYS", "Execute complete. Review code, then run TDD/QA.");
+          await this.pauseAndDone();
+          return;
+        }
+      }
+
+      if (this.aborted) {
+        await this.pauseAndDone();
+        return;
+      }
+
+      // ── TDD: generate test files (after code exists so test writer sees real props) ──
       if (stage === "all" || stage === "tdd") {
         await this.emitStageStart("tdd");
         await this.log("TDD", "Generating test files...");
@@ -726,28 +746,8 @@ export default function ${compName}() {
         if (stage === "tdd") {
           await this.log(
             "SYS",
-            "TDD complete. Tests generated. Run Execute to write the implementation.",
+            "TDD complete. Tests generated. Run QA to validate.",
           );
-          await this.pauseAndDone();
-          return;
-        }
-      }
-
-      if (this.aborted) {
-        await this.pauseAndDone();
-        return;
-      }
-
-      // ── Execute: write code ──
-      if (stage === "all" || stage === "execute") {
-        await this.emitStageStart("execute");
-        await this.log("SYS", "Executing — writing code for each file...");
-        await this.runExecutePhase(fileSpecs);
-        await this.markStageComplete("execute");
-        await this.runJudgePhase();
-
-        if (stage === "execute") {
-          await this.log("SYS", "Execute complete. Review code, then run QA.");
           await this.pauseAndDone();
           return;
         }
@@ -2820,7 +2820,9 @@ export default function ${compName}() {
         requirements,
         file,
         exportName,
-        fileContent && fileContent.trim().length > 100 ? fileContent : undefined,
+        fileContent && fileContent.trim().length > 100
+          ? fileContent
+          : undefined,
         manifestDescription,
       );
     }
