@@ -2736,10 +2736,10 @@ export default function ${compName}() {
   // ─────────────────────────────────────────────
 
   /** Max attempts to fix the test file itself when vitest crashes */
-  private static readonly MAX_TEST_REPAIR_ATTEMPTS = 2;
+  private static readonly MAX_TEST_REPAIR_ATTEMPTS = 2; // repairs per individual test name
 
   /** Max test-fix rounds (run tests → fix first failure → repeat) */
-  private static readonly MAX_TEST_FIX_ROUNDS = 8;
+  private static readonly MAX_TEST_FIX_ROUNDS = 5;
 
   /**
    * Generate tests from project requirements using the test-writer agent.
@@ -3879,7 +3879,7 @@ output: |
   // ─────────────────────────────────────────────
 
   /** Max iterations for the find-one-fix-one QA loop */
-  private static readonly MAX_ITERATIVE_QA_ROUNDS = 5;
+  private static readonly MAX_ITERATIVE_QA_ROUNDS = 3;
 
   /** Max attempts to self-heal a broken component before giving up */
   private static readonly MAX_SELF_HEAL_ATTEMPTS = 3;

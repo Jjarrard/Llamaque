@@ -49,6 +49,16 @@ const NUM_CTX = 32768;
 /** Keep model loaded between calls (seconds). -1 = forever. */
 const KEEP_ALIVE = "30m";
 
+/**
+ * CPU thread cap — limits heat and keeps the laptop usable.
+ * Set OLLAMA_NUM_THREAD in .env.local to override (0 = let Ollama decide).
+ * Default: half the logical CPUs.
+ */
+const NUM_THREAD = (() => {
+  const v = parseInt(process.env.OLLAMA_NUM_THREAD ?? "", 10);
+  return Number.isFinite(v) && v > 0 ? v : undefined; // undefined = Ollama default
+})();
+
 interface OllamaMessage {
   role: "system" | "user" | "assistant";
   content: string;
@@ -117,6 +127,7 @@ export async function callOllama(
       temperature: config.temperature,
       num_predict: numPredict,
       num_ctx: NUM_CTX,
+      ...(NUM_THREAD !== undefined ? { num_thread: NUM_THREAD } : {}),
     },
     stop: [">>END"],
   };
@@ -297,6 +308,7 @@ export async function callOllamaVision(
       temperature: config.temperature,
       num_predict: numPredict,
       num_ctx: NUM_CTX,
+      ...(NUM_THREAD !== undefined ? { num_thread: NUM_THREAD } : {}),
     },
     stop: [">>END"],
   };
