@@ -187,7 +187,7 @@ export async function runTestWriter(
       userMessage += `Write 3 tests for \`${componentName}\`. Infer required prop names from the Requirements above.\n`;
       userMessage += `ALL render() calls MUST pass the required props, e.g. render(<${componentName} description="Coffee" amount={5} onDelete={() => {}} />).\n`;
       userMessage += `- Test 1: renders without crashing (pass all required props)\n`;
-      userMessage += `- Test 2: the provided description/label text appears in the output\n`;
+      userMessage += `- Test 2: the item's NAME or TITLE text appears in the output — use getByText('the-exact-string-you-passed-as-the-name-prop'). Test ONLY the string/label prop, NOT any numeric or computed value like a count, streak, or total.\n`;
       userMessage += `- Test 3: clicking the action button calls the callback prop (e.g. onDelete)\n`;
     } else {
       userMessage += `\n\nWrite 3-5 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`. Focus on:\n`;

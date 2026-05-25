@@ -33,6 +33,19 @@
 import path from "path";
 import fs from "fs";
 import readline from "readline";
+
+// Load .env.local so OLLAMA_NUM_THREAD and other vars are available when
+// running via `npm run smoke` (tsx doesn't load .env.local automatically).
+const envLocalPath = path.resolve(process.cwd(), ".env.local");
+if (fs.existsSync(envLocalPath)) {
+  for (const line of fs.readFileSync(envLocalPath, "utf-8").split("\n")) {
+    const match = /^([A-Z_][A-Z0-9_]*)=(.*)$/.exec(line.trim());
+    if (match && !(match[1] in process.env)) {
+      process.env[match[1]] = match[2];
+    }
+  }
+}
+
 import { db } from "@/db";
 import { projects } from "@/db/schema";
 import { Pipeline, type PipelineStage } from "@/lib/pipeline";
