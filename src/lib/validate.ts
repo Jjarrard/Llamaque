@@ -41,15 +41,25 @@ export function autoRepairOutput(
   // by indented code, strip them and de-indent the code.
   // e.g. "filePath: App.tsx\noutput: |\n  import React..." → "import React..."
   if (/^[ \t]*(filePath|status):\s/m.test(code.split("\n")[0] || "")) {
-    const idx = code.search(/^[ \t]*(?:import|export|const|let|var|function|class|\/\/|\/\*|#)/m);
+    const idx = code.search(
+      /^[ \t]*(?:import|export|const|let|var|function|class|\/\/|\/\*|#)/m,
+    );
     if (idx > 0) {
       const slice = code.slice(idx);
       // Strip common leading indent
       const indent = slice.match(/^([ \t]+)/)?.[1] ?? "";
       code = indent
-        ? slice.split("\n").map((l) => l.startsWith(indent) ? l.slice(indent.length) : l.trimStart()).join("\n").trim()
+        ? slice
+            .split("\n")
+            .map((l) =>
+              l.startsWith(indent) ? l.slice(indent.length) : l.trimStart(),
+            )
+            .join("\n")
+            .trim()
         : slice.trim();
-      fixes.push("Stripped YAML TTM preamble (filePath/output: | block header)");
+      fixes.push(
+        "Stripped YAML TTM preamble (filePath/output: | block header)",
+      );
     }
   }
 
@@ -95,6 +105,14 @@ export function autoRepairOutput(
           fixes.push("Stripped trailing explanation text after code");
         }
       }
+    }
+  }
+
+  // Replace jest-dom matchers not available in plain vitest setup
+  if (ext === "tsx" || ext === "jsx" || ext === "ts" || ext === "js") {
+    if (/\.toBeInTheDocument\(\)/.test(code)) {
+      code = code.replace(/\.toBeInTheDocument\(\)/g, ".toBeTruthy()");
+      fixes.push("Replaced .toBeInTheDocument() with .toBeTruthy()");
     }
   }
 

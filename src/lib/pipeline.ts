@@ -2908,6 +2908,9 @@ export default function ${compName}() {
     // Fix import in test file to match the component's actual export name
     await this.fixTestImport(primaryFile);
 
+    // Reconcile placeholder/button text in test to match what the component actually renders
+    this.reconcileTestPlaceholders(primaryFile);
+
     let testResult = runTests(this.projectId, testFileName);
 
     // If vitest crashed (bad test syntax, missing import), try to repair the test file
@@ -3191,6 +3194,53 @@ export default function ${compName}() {
   }
 
   /**
+   * Reconcile getByPlaceholderText() and getByRole('button', {name:...}) calls in the test
+   * with what the component actually renders. Replaces guessed values with actual ones.
+   */
+  private reconcileTestPlaceholders(targetFile: string): void {
+    const ext = targetFile.split(".").pop()?.toLowerCase() || "";
+    const testFileName = targetFile.replace(
+      /\.\w+$/,
+      `.test.${ext === "tsx" || ext === "jsx" ? "tsx" : ext}`,
+    );
+
+    const outDir = this.outputDir();
+    const testPath = path.join(outDir, testFileName);
+    const codePath = path.join(outDir, targetFile);
+
+    if (!fs.existsSync(testPath) || !fs.existsSync(codePath)) return;
+
+    const codeContent = fs.readFileSync(codePath, "utf-8");
+    let testContent = fs.readFileSync(testPath, "utf-8");
+
+    let changed = false;
+
+    // 1. Extract actual placeholder values from the component
+    const placeholderMatches = [
+      ...codeContent.matchAll(/placeholder=["']([^"']{3,})["']/g),
+    ];
+    const actualPlaceholders = placeholderMatches.map((m) => m[1]);
+
+    if (actualPlaceholders.length > 0) {
+      // Replace any getByPlaceholderText(/regex/i) or getByPlaceholderText("string") with
+      // the actual first placeholder from the component
+      const actual = actualPlaceholders[0];
+      const patched = testContent.replace(
+        /getByPlaceholderText\(\s*(?:\/[^/]+\/[ig]*|["'][^"']*["'])\s*\)/g,
+        () => `getByPlaceholderText("${actual}")`,
+      );
+      if (patched !== testContent) {
+        testContent = patched;
+        changed = true;
+      }
+    }
+
+    if (changed) {
+      fs.writeFileSync(testPath, testContent, "utf-8");
+    }
+  }
+
+  /**
    * Fix the test file import to match the code's actual exported function name.
    * The test-writer might import "Component" but the actual export could be different.
    */
@@ -3418,16 +3468,52 @@ output: |
     // Extract text+element patterns (e.g. <p>Label: <strong>{val}</strong></p>)
     // so the repair model knows text is split and cannot be matched by getByText.
     const splitTextPatterns =
-      componentCode.match(/<(?:p|span|div|h[1-6])[^>]*>[^<]+<(?:strong|span|em|b)[^>]*>/g) ?? [];
+      componentCode.match(
+        /<(?:p|span|div|h[1-6])[^>]*>[^<]+<(?:strong|span|em|b)[^>]*>/g,
+      ) ?? [];
     splitTextPatterns.forEach((m) => {
       const label = m.replace(/<[^>]+>/g, "").trim();
-      if (label) componentHints.push(`split text (label + child element): "${label}..."`);
+      if (label)
+        componentHints.push(
+          `split text (label + child element): "${label}..."`,
+        );
     });
 
     // Detect the specific split-text error to give a targeted hint
     const isSplitTextError = (failure.error || "").includes(
       "broken up by multiple elements",
     );
+
+    // Extract what text the test was searching for and find actual text patterns in the component
+    let textMismatchHint = "";
+    if (isSplitTextError) {
+      const searchedMatch =
+        /Unable to find an element with the text:\s*([^\n.]+)/i.exec(
+          failure.error || "",
+        );
+      const searchedText = searchedMatch?.[1]?.trim();
+      if (searchedText) {
+        // Look for the searched label in JSX text patterns like {label} {value} {suffix}
+        // e.g. searched "Streak: 12" → component has "Streak: {localStreak} days" → hint: "Streak: X days"
+        const labelPrefix = searchedText.replace(/[:]\s*\S+.*$/, "").trim();
+        if (labelPrefix) {
+          // Find JSX that starts with this label prefix
+          const jsxPattern = new RegExp(
+            `(${labelPrefix.replace(/[.*+?^${}()|[\]\\]/g, "\\$&")}[^<"'\`\n]{1,40})`,
+            "i",
+          );
+          const jsxMatch = jsxPattern.exec(componentCode);
+          if (jsxMatch) {
+            // Replace template literal expressions like {foo} with "X"
+            const exampleText = jsxMatch[1]
+              .replace(/\{[^}]+\}/g, "X")
+              .replace(/\s+/g, " ")
+              .trim();
+            textMismatchHint = `\n- The test searched for "${searchedText}" but the component likely renders "${exampleText}". Use the correct text format.`;
+          }
+        }
+      }
+    }
 
     const REPAIR_PROMPT = `One test in this file always fails, even after multiple attempts to fix the code.
 The test assertions are probably wrong — they reference UI elements that don't exist as written.
@@ -3437,7 +3523,9 @@ If the test is testing something impossible, remove it.
 - Keep all other tests unchanged.${
       isSplitTextError
         ? `
-- CRITICAL: The error says text is "broken up by multiple elements". This means getByText() was used for text that spans a label + a child element (e.g. <p>Total: <strong>1</strong></p>). Fix the assertion to check the item by its own text: expect(screen.getByText('the item text')).toBeTruthy() or expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0). Do NOT use getByText() for any text that mixes a static label with a dynamic value.`
+- CRITICAL: The error says text is "broken up by multiple elements" — but this message appears for ANY text-not-found error. The real issue is that the searched text does not exactly match what the component renders. Check the component code for the actual rendered text.${textMismatchHint}
+- If text like "Streak: X days" is spread across child elements, use a regex: getByText(/Streak: \\d+ days/i) or check by role instead.
+- Do NOT use getByText() for any text that mixes a static label with a dynamic value unless you use a flexible regex.`
         : ""
     }
 
