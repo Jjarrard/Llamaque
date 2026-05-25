@@ -1492,6 +1492,22 @@ export default function ${compName}() {
         const manifestEntry = this.manifest.find((m) => m.path === filePath);
         const plannedImports = manifestEntry?.imports ?? [];
 
+        // Inject existing test file so the developer uses the exact prop names
+        // the tests expect. Tests are generated before code (TDD), so they define
+        // the component's public interface — the implementation must match.
+        {
+          const fExt = filePath.split(".").pop()?.toLowerCase() || "";
+          const testExt = fExt === "tsx" || fExt === "jsx" ? "tsx" : fExt;
+          const testFileName = filePath.replace(/\.\w+$/, `.test.${testExt}`);
+          const testDiskPath = path.join(outDir, testFileName);
+          if (fs.existsSync(testDiskPath)) {
+            const testSrc = fs.readFileSync(testDiskPath, "utf-8").trim();
+            if (testSrc.length > 20) {
+              userMessage += `\n\nEXISTING TESTS — your component MUST use the EXACT prop names shown in the render() calls below (e.g. if the test writes onDelete={...}, your Props interface must have onDelete, not onDeleteHabit or deleteHabit):\n${testSrc.split("\n").slice(0, 35).join("\n")}`;
+            }
+          }
+        }
+
         // Inject actual code for direct dependencies (limit 3 files, 60 lines each)
         const depSnippets: string[] = [];
         for (const dep of plannedImports.slice(0, 3)) {
@@ -2782,9 +2798,9 @@ export default function ${compName}() {
       requirements,
       file,
       exportName,
-      // TDD runs before Execute — file is only a scaffold placeholder at this point.
-      // Passing fileContent causes the model to copy the scaffold into the test output.
-      undefined,
+      // Pass the actual code when it already exists (re-runs / feedback pass) so
+      // tests use the real prop names. Undefined on first-run (code not written yet).
+      fileContent && fileContent.trim().length > 100 ? fileContent : undefined,
       manifestDescription,
     );
 
@@ -2804,7 +2820,7 @@ export default function ${compName}() {
         requirements,
         file,
         exportName,
-        undefined,
+        fileContent && fileContent.trim().length > 100 ? fileContent : undefined,
         manifestDescription,
       );
     }

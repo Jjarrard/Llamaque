@@ -165,6 +165,31 @@ export function autoRepairOutput(
         if (toRemove > 0) {
           fixes.push(`Stripped ${toRemove} extra closing ${name}(s)`);
         }
+      } else if (
+        count < 0 &&
+        name === "brace" &&
+        (ext === "tsx" || ext === "ts" || ext === "js" || ext === "jsx")
+      ) {
+        // TS/TSX/JS: strip trailing lines that are ONLY a closing brace.
+        // The model often appends a stray } after the component close when
+        // generating inside markdown fences that are later stripped.
+        // Only remove from the very end so we don't corrupt mid-file structure.
+        const lines = code.trimEnd().split("\n");
+        const excess = -count;
+        let removed = 0;
+        while (removed < excess && lines.length > 0) {
+          const last = lines[lines.length - 1].trim();
+          if (last === "}" || last === "};") {
+            lines.pop();
+            removed++;
+          } else {
+            break;
+          }
+        }
+        if (removed > 0) {
+          code = lines.join("\n") + "\n";
+          fixes.push(`Stripped ${removed} extra trailing closing brace(s)`);
+        }
       }
     }
   }
