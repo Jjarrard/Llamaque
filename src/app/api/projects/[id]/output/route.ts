@@ -4,6 +4,7 @@ import path from "path";
 import { db } from "@/db";
 import { tasks } from "@/db/schema";
 import { eq, and } from "drizzle-orm";
+import { detectComponentName } from "@/lib/ops/component-detect";
 
 const MIME_TYPES: Record<string, string> = {
   ".html": "text/html",
@@ -111,12 +112,10 @@ export async function GET(
     // Sibling files are inlined before the main component code.
     const componentCode = bundleLocalImports(cleanedContent, outputDir);
 
-    // Detect the component function name from the source code
-    // Handles: export default function Foo(), function Foo(), const Foo =
-    const fnNameMatch = cleanedContent.match(
-      /export\s+default\s+function\s+(\w+)|(?:^|\n)\s*function\s+(\w+)/,
-    );
-    const componentName = fnNameMatch?.[1] || fnNameMatch?.[2] || "Component";
+    // Detect the component function name from the source code using the
+    // shared detector (covers FC pattern, arrow consts, memo/forwardRef,
+    // class components, named function decls, and basename fallback).
+    const componentName = detectComponentName(cleanedContent, previewFile);
     const previewBanner =
       previewFile !== file
         ? `<div style="position:fixed;bottom:0;right:0;background:#1e1e2e;color:#a6e3a1;font:11px monospace;padding:4px 8px;border-radius:4px 0 0 0;opacity:0.85;z-index:9998">preview: ${previewFile}</div>`

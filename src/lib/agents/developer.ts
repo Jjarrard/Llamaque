@@ -129,6 +129,7 @@ ${scaffold}
 
 Hard rules:
 - Keep the function name \`${componentName}\` — do NOT rename it.
+- DECLARE BEFORE YOU USE: every name you reference in JSX (onClick={X}, {value}, etc) MUST have a const/function/useState declaration above the return. NO EXCEPTIONS.
 - Inline styles ONLY: style={{ }}. No CSS imports.
 - ALL inputs MUST be controlled: value={state} + onChange={handler}.
 - Every event handler must do real work. NEVER use alert() or console.log() as the main action.

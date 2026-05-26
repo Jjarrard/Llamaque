@@ -17,6 +17,7 @@ import fs from "fs";
 import path from "path";
 import { chromium } from "playwright";
 import { callOllamaVision } from "@/lib/ollama";
+import { detectComponentName } from "@/lib/ops/component-detect";
 
 export interface VisualIssue {
   file: string;
@@ -81,10 +82,7 @@ export function buildPreviewHtml(
   const cleaned = raw.replace(/^>>[ \t]?/gm, "");
   const componentCode = inlineLocalImports(cleaned, outputDir);
 
-  const fnNameMatch = cleaned.match(
-    /export\s+default\s+function\s+(\w+)|(?:^|\n)\s*function\s+(\w+)/,
-  );
-  const componentName = fnNameMatch?.[1] || fnNameMatch?.[2] || "Component";
+  const componentName = detectComponentName(cleaned, mainFile);
 
   const fullCode =
     `const { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext, createContext, Fragment } = React;\n\n` +

@@ -33,12 +33,17 @@ import {
   formatDuplicateIssue,
 } from "@/lib/ops/duplicate-check";
 import { detectTruncation } from "@/lib/ops/truncation-check";
+import {
+  findUndefinedIdentifiers,
+  formatUndefIssue,
+} from "@/lib/ops/undef-check";
 
 export type ValidationCategory =
   | "structural"
   | "syntax"
   | "semantic"
   | "duplicate"
+  | "undefined"
   | "truncation";
 
 export interface FileValidationResult {
@@ -117,6 +122,14 @@ export function validateFileChange(
     const dupes = findDuplicateSymbols(filePath, candidate);
     if (dupes.length > 0) {
       return make(false, "duplicate", dupes.map(formatDuplicateIssue));
+    }
+
+    // Step 4b — Undefined-identifier check (catches handlers referenced
+    // in JSX but never declared — the most common runtime-failure-with-clean-tsc
+    // pattern from small models).
+    const undefs = findUndefinedIdentifiers(filePath, candidate);
+    if (undefs.length > 0) {
+      return make(false, "undefined", undefs.map(formatUndefIssue));
     }
   }
 

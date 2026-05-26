@@ -82,6 +82,11 @@ import {
   listTopLevelSymbols,
 } from "@/lib/ops/duplicate-check";
 import { detectTruncation } from "@/lib/ops/truncation-check";
+import {
+  findUndefinedIdentifiers,
+  formatUndefIssue,
+} from "@/lib/ops/undef-check";
+import { autoStubUndefs } from "@/lib/ops/auto-stub";
 import { validateOutput, autoRepairOutput } from "@/lib/validate";
 import { locateWindows, hashString, LocateCandidate } from "@/lib/locator";
 import {
@@ -186,6 +191,14 @@ export class Pipeline {
    * Defaults to "proceed" so feedback/qa-only runs always get full QA.
    */
   private judgeVerdict: "proceed" | "warn" | "skip_vitest" = "proceed";
+  /**
+   * Set by post-build gates (render gate, undef check, judge SKIP_VITEST)
+   * when the produced artifact is known-broken in a way that would ship a
+   * non-functional preview to the user. When non-empty, the final project
+   * status becomes "review" instead of "done" so the user is not silently
+   * handed a broken build.
+   */
+  private qaFatalIssues: string[] = [];
 
   constructor(
     projectId: number,
@@ -649,11 +662,32 @@ export default function ${compName}() {
         await this.log("SYS", "QA check after feedback failed — continuing");
       }
       await this.markStageComplete("feedback");
+      const fatalCount = this.qaFatalIssues.length;
+      const finalStatus: "done" | "review" = fatalCount > 0 ? "review" : "done";
+      const fatalActivity =
+        fatalCount > 0
+          ? `Pipeline finished with ${fatalCount} unresolved issue${
+              fatalCount === 1 ? "" : "s"
+            }: ${this.qaFatalIssues[0].slice(0, 160)}`
+          : null;
+      if (fatalCount > 0) {
+        await this.log(
+          "SYS",
+          `Feedback pipeline finished with ${fatalCount} fatal issue(s) — marking project for review`,
+        );
+      }
       await db
         .update(projects)
-        .set({ status: "done", currentStage: null, currentActivity: null })
+        .set({
+          status: finalStatus,
+          currentStage: null,
+          currentActivity: fatalActivity,
+        })
         .where(eq(projects.id, this.projectId));
-      this.emit("pipeline_done", { projectId: this.projectId });
+      this.emit("pipeline_done", {
+        projectId: this.projectId,
+        fatalIssues: this.qaFatalIssues.slice(0, 10),
+      });
       return;
     }
 
@@ -663,11 +697,32 @@ export default function ${compName}() {
       await this.log("SYS", "Running QA pass...");
       await this.runFullQA();
       await this.markStageComplete("qa");
+      const fatalCount = this.qaFatalIssues.length;
+      const finalStatus: "done" | "review" = fatalCount > 0 ? "review" : "done";
+      const fatalActivity =
+        fatalCount > 0
+          ? `Pipeline finished with ${fatalCount} unresolved issue${
+              fatalCount === 1 ? "" : "s"
+            }: ${this.qaFatalIssues[0].slice(0, 160)}`
+          : null;
+      if (fatalCount > 0) {
+        await this.log(
+          "SYS",
+          `QA-only pipeline finished with ${fatalCount} fatal issue(s) — marking project for review`,
+        );
+      }
       await db
         .update(projects)
-        .set({ status: "done", currentStage: null, currentActivity: null })
+        .set({
+          status: finalStatus,
+          currentStage: null,
+          currentActivity: fatalActivity,
+        })
         .where(eq(projects.id, this.projectId));
-      this.emit("pipeline_done", { projectId: this.projectId });
+      this.emit("pipeline_done", {
+        projectId: this.projectId,
+        fatalIssues: this.qaFatalIssues.slice(0, 10),
+      });
       return;
     }
 
@@ -812,12 +867,32 @@ export default function ${compName}() {
     const done = allTasks.filter((t) => t.status === "done").length;
     const stuck = allTasks.filter((t) => t.status === "stuck").length;
 
+    const fatalCount = this.qaFatalIssues.length;
+    const finalStatus: "done" | "paused" | "review" =
+      fatalCount > 0 ? "review" : stuck > 0 ? "paused" : "done";
+    const fatalActivity =
+      fatalCount > 0
+        ? `Pipeline finished with ${fatalCount} unresolved issue${
+            fatalCount === 1 ? "" : "s"
+          }: ${this.qaFatalIssues[0].slice(0, 160)}`
+        : null;
+
+    if (fatalCount > 0) {
+      await this.log(
+        "SYS",
+        `Pipeline finished but ${fatalCount} fatal issue(s) remain — marking project for review:`,
+      );
+      for (const reason of this.qaFatalIssues.slice(0, 5)) {
+        await this.log("SYS", `  • ${reason}`);
+      }
+    }
+
     await db
       .update(projects)
       .set({
-        status: stuck > 0 ? "paused" : "done",
+        status: finalStatus,
         currentStage: null,
-        currentActivity: null,
+        currentActivity: fatalActivity,
       })
       .where(eq(projects.id, this.projectId));
 
@@ -827,6 +902,7 @@ export default function ${compName}() {
       totalTasks: allTasks.length,
       done,
       stuck,
+      fatalIssues: this.qaFatalIssues.slice(0, 10),
     });
   }
 
@@ -1496,6 +1572,14 @@ export default function ${compName}() {
       // File-type-specific rules + UX quality reminders
       userMessage += `\n\n${getFileTypeRules(filePath)}`;
 
+      // Critical anti-pattern guard for small models: they often write JSX
+      // that references handlers/state they never declared. Hammer this
+      // home explicitly — empirically the single most common failure
+      // mode for gemma4:e4b and similar.
+      if (/\.(tsx|jsx)$/i.test(filePath)) {
+        userMessage += `\n\nMANDATORY DECLARATION RULE: Before writing JSX, list in your head every name you will reference (handlers like onClick={X}, state values like {count}, computed vars). EVERY such name MUST be declared above the return statement as either:\n  • const NAME = () => { ... };\n  • const [NAME, setNAME] = useState(...);\n  • function NAME() { ... }\n  • imported at the top of the file\nIf you reference handleStartPause in JSX, you MUST have const handleStartPause = ... somewhere above. NO EXCEPTIONS.`;
+      }
+
       // Inject the file manifest so the developer knows the role of every file
       // in the project. This prevents leaf components from being written as
       // standalone apps and tells container files which siblings to import.
@@ -1825,13 +1909,23 @@ export default function ${compName}() {
             patchDupes.length === 0
               ? detectTruncation(filePath, candidate)
               : [];
+          const patchUndefs =
+            patchValidation.valid &&
+            patchSyntax.length === 0 &&
+            patchSemantic.length === 0 &&
+            patchDupes.length === 0 &&
+            patchTruncation.length === 0 &&
+            patchableExts.includes(fileExt)
+              ? findUndefinedIdentifiers(filePath, candidate)
+              : [];
 
           if (
             patchValidation.valid &&
             patchSyntax.length === 0 &&
             patchSemantic.length === 0 &&
             patchDupes.length === 0 &&
-            patchTruncation.length === 0
+            patchTruncation.length === 0 &&
+            patchUndefs.length === 0
           ) {
             await this.writeOutputFile(filePath, candidate);
             stepsCompleted++;
@@ -1853,7 +1947,9 @@ export default function ${compName}() {
                   ? `TS semantic: ${patchSemantic.join("; ")}`
                   : patchDupes.length > 0
                     ? `duplicate symbols: ${patchDupes.map(formatDuplicateIssue).join("; ")}`
-                    : `truncation: ${patchTruncation.join("; ")}`;
+                    : patchTruncation.length > 0
+                      ? `truncation: ${patchTruncation.join("; ")}`
+                      : `undefined identifiers: ${patchUndefs.map((u) => u.name).join(", ")}`;
             await this.log(
               "QA",
               `Step ${i + 1} patch invalid after ${totalBlocks} block(s) (${reason}) — falling back to full rewrite`,
@@ -2085,6 +2181,44 @@ export default function ${compName}() {
             stepUserMessage =
               userMessage +
               `\n\nYour previous output appears truncated: ${errorSummary}. Rewrite the COMPLETE file — make sure every block, function, and statement is properly closed.`;
+            continue;
+          }
+
+          // Undefined-identifier check — catches the most common runtime
+          // bug that slips past TS (we exclude code 2304 due to JSX/React
+          // false positives). E.g. `<button onClick={handleStartPause}>`
+          // when handleStartPause was never declared.
+          const undefs = findUndefinedIdentifiers(filePath, output);
+          if (undefs.length > 0) {
+            const errorSummary = undefs.map(formatUndefIssue).join("\n");
+            await this.log(
+              "QA",
+              `Step ${i + 1} attempt ${attempt} undefined identifiers: ${undefs.map((u) => u.name).join(", ")}`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            lastGarbageOutput = output;
+            const sig = `UNDEF:${undefs
+              .map((u) => u.name)
+              .sort()
+              .join(",")
+              .slice(0, 80)}`;
+            if (lastErrorSignature === sig) {
+              repeatedErrorCount++;
+            } else {
+              lastErrorSignature = sig;
+              repeatedErrorCount = 1;
+            }
+            if (repeatedErrorCount >= 2) {
+              await this.log(
+                "QA",
+                `Step ${i + 1}: identical undefined-identifier set twice — short-circuiting to recovery`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+              break;
+            }
+            stepUserMessage =
+              userMessage +
+              `\n\nYour previous output references identifiers that are never declared anywhere in the file:\n${errorSummary}\n\nRewrite the COMPLETE file. For EVERY name you reference in JSX or expressions, make sure it is either: (a) declared with const/let/function/useState, (b) imported at the top, or (c) a function parameter in scope. Do not output JSX that calls a handler you forgot to define.`;
             continue;
           }
 
@@ -2776,9 +2910,64 @@ export default function ${compName}() {
       );
     }
 
+    // ── Layer 5: Model Escalation ──
+    // Last-resort: if LLAMAQUE_FALLBACK_MODEL env var is set to a bigger
+    // model name (e.g. "qwen2.5-coder:32b"), retry the reframe tactic on
+    // that model. Skipped silently when the env var is missing.
+    const fallbackModel = process.env.LLAMAQUE_FALLBACK_MODEL?.trim();
+    if (fallbackModel && fallbackModel !== this.model) {
+      await this.log(
+        "RECOVER",
+        `Layer 5: Escalating ${filePath} to fallback model "${fallbackModel}"`,
+        taskId,
+      );
+      try {
+        const escResult = await runReframeTactic(
+          fallbackModel,
+          filePath,
+          requirement,
+          this.projectName,
+        );
+        if (escResult.cleaned) {
+          const validation = validateOutput(escResult.cleaned, filePath, {
+            allowScaffold: true,
+          });
+          if (validation.valid) {
+            await this.log(
+              "RECOVER",
+              `Layer 5 SUCCESS: ${fallbackModel} produced valid code (${escResult.tokens} tokens)`,
+              taskId,
+              escResult.prompt,
+              escResult.raw,
+            );
+            return escResult.cleaned;
+          }
+          await this.log(
+            "RECOVER",
+            `Layer 5 FAIL: ${fallbackModel} output invalid: ${validation.reason}`,
+            taskId,
+            escResult.prompt,
+            escResult.raw,
+          );
+        } else {
+          await this.log(
+            "RECOVER",
+            `Layer 5 FAIL: ${fallbackModel} produced no parseable output`,
+            taskId,
+          );
+        }
+      } catch (err) {
+        await this.log(
+          "RECOVER",
+          `Layer 5 CRASH: ${err instanceof Error ? err.message : String(err)}`,
+          taskId,
+        );
+      }
+    }
+
     await this.log(
       "RECOVER",
-      "All 4 recovery layers exhausted — no valid output produced",
+      "All recovery layers exhausted — no valid output produced",
       taskId,
     );
     return null;
@@ -2885,6 +3074,7 @@ export default function ${compName}() {
         `${summary} → SKIP_VITEST: most output is insufficient; skipping test runner to avoid crash-loop${detail}`,
       );
       this.judgeVerdict = "skip_vitest";
+      this.qaFatalIssues.push(`Judge verdict SKIP_VITEST: ${summary}${detail}`);
     } else if (thin > 0 || missing > 0) {
       await this.log(
         "JUDGE",
@@ -5013,6 +5203,28 @@ output: |
       tsxFiles.find((f) => /^app\.(tsx|jsx)$/i.test(f.path))?.path ??
       tsxFiles[tsxFiles.length - 1].path;
 
+    // ── Pre-flight: auto-stub undefined identifiers across all TSX files ──
+    // If the recovery path shipped a file with `<button onClick={handleX}>`
+    // but no `handleX` declaration, we'd rather render an inert UI than a
+    // ReferenceError page. Stubs preserve UI shape; the user can iterate
+    // via the feedback pass.
+    for (const f of tsxFiles) {
+      const fp = path.join(outDir, f.path);
+      if (!fs.existsSync(fp)) continue;
+      const src = fs.readFileSync(fp, "utf-8");
+      const { content: stubbed, stubbedNames } = autoStubUndefs(f.path, src);
+      if (stubbedNames.length > 0) {
+        await this.writeOutputFile(f.path, stubbed);
+        await this.log(
+          "QA",
+          `Auto-stubbed ${stubbedNames.length} undefined identifier(s) in ${f.path}: ${stubbedNames.slice(0, 6).join(", ")}${stubbedNames.length > 6 ? "..." : ""} — UI will render but these handlers are no-ops`,
+        );
+        this.qaFatalIssues.push(
+          `${f.path}: ${stubbedNames.length} handler(s) stubbed (no-op) — model did not declare: ${stubbedNames.slice(0, 4).join(", ")}`,
+        );
+      }
+    }
+
     await this.log(
       "QA",
       `Render gate: loading ${mainFile} in headless Chromium...`,
@@ -5077,6 +5289,9 @@ output: |
           "QA",
           `Render gate: no patch produced — leaving errors for user`,
         );
+        this.qaFatalIssues.push(
+          `Render gate (${mainFile}): ${primaryError.slice(0, 200)} (model produced no patch)`,
+        );
         return;
       }
       const applied = applyPatch(current, [blocks[0]]);
@@ -5084,6 +5299,9 @@ output: |
         await this.log(
           "QA",
           `Render gate: patch failed (${applied.reason}) — leaving errors for user`,
+        );
+        this.qaFatalIssues.push(
+          `Render gate (${mainFile}): ${primaryError.slice(0, 200)} (patch failed: ${applied.reason})`,
         );
         return;
       }
@@ -5100,6 +5318,9 @@ output: |
         await this.log(
           "QA",
           `Render gate: patch invalid (${!validation.valid ? validation.reason : syntax.join("; ")}) — leaving errors for user`,
+        );
+        this.qaFatalIssues.push(
+          `Render gate (${mainFile}): ${primaryError.slice(0, 200)} (patch produced invalid output)`,
         );
         return;
       }
@@ -5122,11 +5343,17 @@ output: |
         for (const e of verify.errors) {
           await this.log("QA", `  • ${e.slice(0, 200)}`);
         }
+        this.qaFatalIssues.push(
+          `Render gate (${mainFile}): ${verify.errors[0].slice(0, 200)}`,
+        );
       }
     } catch (err) {
       await this.log(
         "QA",
         `Render gate: patch attempt crashed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      this.qaFatalIssues.push(
+        `Render gate (${mainFile}): unresolved runtime error after patch attempt`,
       );
     }
   }
