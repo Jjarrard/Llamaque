@@ -135,6 +135,7 @@ Hard rules:
 - For TIMERS: use useEffect + setInterval/setTimeout + useRef for the interval ID. Cleanup in return.
 - Only import from "react" or sibling files ("./Foo"). No npm packages.
 - If SIBLING FILES are listed in the user message, import from them — do NOT re-implement their logic.
+- NEVER declare the same variable name more than once in the same scope. Derived display values (e.g. minutes, seconds) belong ONLY in the JSX return, not as hoisted consts above it.
 - Output ONLY code. No prose.
 
 Reply with EITHER format (both are accepted):

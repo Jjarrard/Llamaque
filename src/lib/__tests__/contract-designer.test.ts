@@ -28,6 +28,7 @@ function ollamaReturns(text: string) {
 function makeManifest(paths: string[]) {
   return paths.map((p) => ({
     path: p,
+    type: "code" as const,
     description: `${p} component`,
     language: p.split(".").pop() ?? "ts",
   }));

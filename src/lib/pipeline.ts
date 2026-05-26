@@ -1766,8 +1766,18 @@ export default function ${compName}() {
             patchValidation.valid && patchableExts.includes(fileExt)
               ? checkTypeScriptSyntax(filePath, candidate)
               : [];
+          const patchSemantic =
+            patchValidation.valid &&
+            patchSyntax.length === 0 &&
+            patchableExts.includes(fileExt)
+              ? checkTypeScriptSemantics(filePath, candidate)
+              : [];
 
-          if (patchValidation.valid && patchSyntax.length === 0) {
+          if (
+            patchValidation.valid &&
+            patchSyntax.length === 0 &&
+            patchSemantic.length === 0
+          ) {
             await this.writeOutputFile(filePath, candidate);
             stepsCompleted++;
             const turnNote = modelSaidDone ? " (DONE)" : "";
@@ -1782,7 +1792,9 @@ export default function ${compName}() {
           } else {
             const reason = !patchValidation.valid
               ? patchValidation.reason
-              : `TS syntax: ${patchSyntax.join("; ")}`;
+              : patchSyntax.length > 0
+                ? `TS syntax: ${patchSyntax.join("; ")}`
+                : `TS semantic: ${patchSemantic.join("; ")}`;
             await this.log(
               "QA",
               `Step ${i + 1} patch invalid after ${totalBlocks} block(s) (${reason}) — falling back to full rewrite`,

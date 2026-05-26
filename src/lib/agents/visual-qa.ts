@@ -37,12 +37,18 @@ export interface VisualQAResult {
 
 const SYSTEM_PROMPT = `You are a UI reviewer. You will be given:
 1. A project specification.
-2. A screenshot of the rendered application.
+2. A screenshot of the rendered application in its INITIAL / IDLE state (no user interaction has occurred).
 
 Identify VISUAL issues where the rendered UI does not match the spec:
 - Missing buttons / inputs / elements explicitly listed in the spec
 - Blank screen / error message visible
 - Critical text mismatches (e.g. spec says "Submit" but the button reads "Click")
+
+IMPORTANT — this is a STATIC screenshot of the initial render. Do NOT flag:
+- Dynamic behaviours that only appear after user interaction (e.g. button text changing from "Start" to "Pause" while running, counters incrementing, items appearing after clicking Add)
+- Timers, countdowns, or animations that change over time
+- State that is only visible after a specific user action
+Only flag elements that should be present on first load and are missing from the screenshot.
 
 Do NOT report polish (colours, alignment, fonts) — only spec-compliance.
 
