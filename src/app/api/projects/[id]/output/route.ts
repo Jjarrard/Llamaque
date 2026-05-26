@@ -78,8 +78,27 @@ export async function GET(
 
   // For TSX files, generate a preview HTML that loads React CDN + Babel standalone
   if (ext === ".tsx" || ext === ".jsx") {
+    // If the requested file is a leaf component (not a root file), prefer rendering
+    // the root file (App.tsx / index.tsx / main.tsx) so it renders with real props.
+    // Leaf components rendered in isolation crash because they have no props.
+    const ROOT_NAMES = ["App.tsx", "App.jsx", "app.tsx", "index.tsx", "index.jsx", "main.tsx", "Main.tsx"];
+    const requestedBasename = path.basename(file);
+    const isRootFile = ROOT_NAMES.includes(requestedBasename);
+    let previewFile = file;
+    let previewContent = content;
+    if (!isRootFile) {
+      for (const rootName of ROOT_NAMES) {
+        const rootPath = path.join(outputDir, rootName);
+        if (fs.existsSync(rootPath)) {
+          previewFile = rootName;
+          previewContent = fs.readFileSync(rootPath, "utf-8");
+          break;
+        }
+      }
+    }
+
     // Strip >> TTM protocol markers that may have leaked into the file
-    const cleanedContent = content.replace(/^>>[ \t]?/gm, "");
+    const cleanedContent = previewContent.replace(/^>>[ \t]?/gm, "");
     // Bundle local sibling imports so <Sibling /> references resolve in the preview.
     // Sibling files are inlined before the main component code.
     const componentCode = bundleLocalImports(cleanedContent, outputDir);
@@ -90,6 +109,9 @@ export async function GET(
       /export\s+default\s+function\s+(\w+)|(?:^|\n)\s*function\s+(\w+)/,
     );
     const componentName = fnNameMatch?.[1] || fnNameMatch?.[2] || "Component";
+    const previewBanner = previewFile !== file
+      ? `<div style="position:fixed;bottom:0;right:0;background:#1e1e2e;color:#a6e3a1;font:11px monospace;padding:4px 8px;border-radius:4px 0 0 0;opacity:0.85;z-index:9998">preview: ${previewFile}</div>`
+      : "";
 
     // Escape backticks and ${} in user code so they don't break the JS template literal
     const escapedCode = componentCode
@@ -124,6 +146,7 @@ export async function GET(
 </head>
 <body>
   <div id="root"></div>
+  ${previewBanner}
   <div id="error-display">
     <h2>Component Error</h2>
     <div class="msg" id="error-message"></div>
