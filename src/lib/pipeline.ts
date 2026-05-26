@@ -141,6 +141,7 @@ export class Pipeline {
   private projectName: string = "";
   private projectDescription: string = "";
   private customInstructions: string = "";
+  private threadProfile: "low" | "med" | "high" = "med";
   private deterministicDraftByFile: Record<string, string> = {};
   /** Round-robin cursor for resolveFilePath ties — prevents all features
    * landing on manifest[0] when keyword overlap is ambiguous. */
@@ -179,10 +180,16 @@ export class Pipeline {
    */
   private judgeVerdict: "proceed" | "warn" | "skip_vitest" = "proceed";
 
-  constructor(projectId: number, model: string, onEvent: EventCallback) {
+  constructor(
+    projectId: number,
+    model: string,
+    onEvent: EventCallback,
+    threadProfile: "low" | "med" | "high" = "med",
+  ) {
     this.projectId = projectId;
     this.model = model;
     this.onEvent = onEvent;
+    this.threadProfile = threadProfile;
   }
 
   abort() {
@@ -490,6 +497,7 @@ export default function ${compName}() {
           // Fire-and-forget — don't await in the hot path
           void this.emitActivity(message);
         },
+        threadProfile: this.threadProfile,
       },
       () => this._runInner(stage, breakdownDepth, feedback),
     );

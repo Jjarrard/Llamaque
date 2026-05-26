@@ -39,6 +39,9 @@ export default function Home() {
   const [description, setDescription] = useState("");
   const [customInstructions, setCustomInstructions] = useState("");
   const [primaryModel, setPrimaryModel] = useState("");
+  const [threadProfile, setThreadProfile] = useState<"low" | "med" | "high">(
+    "med",
+  );
   const [availableModels, setAvailableModels] = useState<string[]>([]);
   const [modelsLoading, setModelsLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
@@ -81,6 +84,7 @@ export default function Home() {
           description: description.trim(),
           customInstructions: customInstructions.trim() || undefined,
           primaryModel,
+          threadProfile,
         }),
       });
       if (res.ok) {
@@ -168,6 +172,40 @@ export default function Home() {
                 </option>
               ))}
             </select>
+          )}
+        </div>
+        <div className={styles.field}>
+          <label className={styles.fieldLabel}>CPU Threads</label>
+          <div className={styles.threadButtons}>
+            <button
+              type="button"
+              className={`${styles.threadBtn} ${threadProfile === "low" ? styles.threadBtnActive : ""}`}
+              onClick={() => setThreadProfile("low")}
+            >
+              Low
+            </button>
+            <button
+              type="button"
+              className={`${styles.threadBtn} ${threadProfile === "med" ? styles.threadBtnActive : ""}`}
+              onClick={() => setThreadProfile("med")}
+            >
+              Med
+            </button>
+            <button
+              type="button"
+              className={`${styles.threadBtn} ${threadProfile === "high" ? styles.threadBtnActive : ""}`}
+              onClick={() => setThreadProfile("high")}
+            >
+              High
+            </button>
+          </div>
+          <p className={styles.threadHint}>
+            Low = 1/4 cores, Med = 1/2 cores, High = all cores.
+          </p>
+          {threadProfile === "high" && (
+            <p className={styles.threadWarning}>
+              Warning: High uses all cores and may make your machine sluggish.
+            </p>
           )}
         </div>
         <button

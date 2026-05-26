@@ -85,6 +85,7 @@ export async function POST(
     projectId,
     project.primaryModel,
     () => {}, // Events consumed via SSE endpoint
+    project.threadProfile,
   );
 
   activePipelines.set(projectId, pipeline);

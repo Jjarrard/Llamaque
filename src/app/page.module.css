@@ -102,6 +102,44 @@
   cursor: not-allowed;
 }
 
+.threadButtons {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.threadBtn {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 0.4rem 0.8rem;
+  font-size: 0.8rem;
+  cursor: pointer;
+}
+
+.threadBtn:last-child {
+  border-right: none;
+}
+
+.threadBtnActive {
+  background: var(--accent);
+  color: white;
+}
+
+.threadHint {
+  margin-top: 0.35rem;
+  font-size: 0.75rem;
+  color: var(--text-muted);
+}
+
+.threadWarning {
+  margin-top: 0.35rem;
+  font-size: 0.78rem;
+  color: var(--warning);
+}
+
 .projectList {
   display: flex;
   flex-direction: column;

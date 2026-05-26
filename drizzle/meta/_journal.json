@@ -29,6 +29,13 @@
       "when": 1747526400000,
       "tag": "0003_add_feedback_ledger",
       "breakpoints": true
+    },
+    {
+      "idx": 4,
+      "version": "6",
+      "when": 1772149200000,
+      "tag": "0004_add_thread_profile",
+      "breakpoints": true
     }
   ]
 }

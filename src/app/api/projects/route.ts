@@ -65,6 +65,12 @@ export async function GET() {
  */
 export async function POST(request: NextRequest) {
   const body = await request.json();
+  const threadProfile =
+    body.threadProfile === "low" ||
+    body.threadProfile === "med" ||
+    body.threadProfile === "high"
+      ? body.threadProfile
+      : "med";
 
   if (!body.name || !body.description) {
     return NextResponse.json(
@@ -98,6 +104,7 @@ export async function POST(request: NextRequest) {
       description: body.description,
       customInstructions: body.customInstructions || null,
       primaryModel: body.primaryModel,
+      threadProfile,
     })
     .returning();
 

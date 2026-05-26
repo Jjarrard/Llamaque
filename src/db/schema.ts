@@ -5,6 +5,11 @@ export const projects = sqliteTable("projects", {
   name: text("name").notNull(),
   description: text("description").notNull(),
   customInstructions: text("custom_instructions"),
+  threadProfile: text("thread_profile", {
+    enum: ["low", "med", "high"],
+  })
+    .notNull()
+    .default("med"),
   status: text("status", {
     enum: ["pending", "running", "paused", "review", "done"],
   })

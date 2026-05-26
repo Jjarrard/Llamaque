@@ -55,6 +55,24 @@ export async function PATCH(
     return NextResponse.json({ ok: true });
   }
 
+  if (body.action === "set_thread_profile") {
+    if (
+      body.threadProfile !== "low" &&
+      body.threadProfile !== "med" &&
+      body.threadProfile !== "high"
+    ) {
+      return NextResponse.json(
+        { error: "threadProfile must be low, med, or high" },
+        { status: 400 },
+      );
+    }
+    await db
+      .update(projects)
+      .set({ threadProfile: body.threadProfile })
+      .where(eq(projects.id, projectId));
+    return NextResponse.json({ ok: true });
+  }
+
   if (body.action === "update_meta") {
     const updates: Record<string, string> = {};
     if (typeof body.name === "string" && body.name.trim()) {
@@ -64,10 +82,7 @@ export async function PATCH(
       updates.description = body.description;
     }
     if (Object.keys(updates).length > 0) {
-      await db
-        .update(projects)
-        .set(updates)
-        .where(eq(projects.id, projectId));
+      await db.update(projects).set(updates).where(eq(projects.id, projectId));
     }
     return NextResponse.json({ ok: true });
   }

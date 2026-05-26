@@ -36,6 +36,7 @@ type Project = {
   description: string;
   status: string;
   primaryModel: string;
+  threadProfile: "low" | "med" | "high";
   completedStages: string;
   fileManifest: string | null;
   currentStage: string | null;
@@ -414,6 +415,20 @@ export default function ProjectPage() {
     });
     if (res.ok) {
       setProject({ ...project, primaryModel: newModel });
+    }
+  };
+
+  const handleThreadProfileChange = async (
+    threadProfile: "low" | "med" | "high",
+  ) => {
+    if (!project || threadProfile === project.threadProfile) return;
+    const res = await fetch(`/api/projects/${projectId}`, {
+      method: "PATCH",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ action: "set_thread_profile", threadProfile }),
+    });
+    if (res.ok) {
+      setProject({ ...project, threadProfile });
     }
   };
 
@@ -1066,6 +1081,32 @@ export default function ProjectPage() {
               )}
             </select>
           )}
+          <div className={styles.threadPicker}>
+            <button
+              type="button"
+              className={`${styles.threadBtn} ${project.threadProfile === "low" ? styles.threadBtnActive : ""}`}
+              onClick={() => handleThreadProfileChange("low")}
+              disabled={running}
+            >
+              Low
+            </button>
+            <button
+              type="button"
+              className={`${styles.threadBtn} ${project.threadProfile === "med" ? styles.threadBtnActive : ""}`}
+              onClick={() => handleThreadProfileChange("med")}
+              disabled={running}
+            >
+              Med
+            </button>
+            <button
+              type="button"
+              className={`${styles.threadBtn} ${project.threadProfile === "high" ? styles.threadBtnActive : ""}`}
+              onClick={() => handleThreadProfileChange("high")}
+              disabled={running}
+            >
+              High
+            </button>
+          </div>
           <button
             className={styles.deleteBtn}
             onClick={() => setShowDeleteConfirm(true)}
@@ -1075,6 +1116,11 @@ export default function ProjectPage() {
           </button>
         </div>
       </div>
+      {project.threadProfile === "high" && (
+        <p className={styles.highThreadWarning}>
+          Warning: High uses all CPU cores and may make your machine sluggish.
+        </p>
+      )}
 
       {/* ── Project header: editable title + description ── */}
       <div className={styles.projectHeader}>

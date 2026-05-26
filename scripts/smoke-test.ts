@@ -10,6 +10,7 @@
  *
  * Options:
  *   --model     <string>   Ollama model (default: qwen3:1.7b)
+ *   --thread-profile <s>   low | med | high (default: med)
  *   --stage     <string>   Pipeline stage to run (default: all)
  *   --feedback  <string>   Run a feedback pass after the main stage
  *   --desc      <string>   Project description
@@ -24,6 +25,9 @@
  *
  *   # Full run + feedback pass
  *   npm run smoke -- --feedback "rename the + button to Increment"
+
+ *   # Run with high CPU thread profile
+ *   npm run smoke -- --thread-profile high
  *
  *   # Custom project, keep to open in browser
  *   npm run smoke -- --keep \
@@ -129,6 +133,13 @@ async function pickFromList(prompt: string, items: string[]): Promise<string> {
 
 const LIST_MODELS = argFlag("--list-models");
 const MODEL_ARG = argStr("--model");
+const THREAD_PROFILE_ARG = argStr("--thread-profile", "med").toLowerCase();
+const THREAD_PROFILE: "low" | "med" | "high" =
+  THREAD_PROFILE_ARG === "low" ||
+  THREAD_PROFILE_ARG === "med" ||
+  THREAD_PROFILE_ARG === "high"
+    ? THREAD_PROFILE_ARG
+    : "med";
 const STAGE = argStr("--stage", "all") as PipelineStage;
 const FEEDBACK = argStr("--feedback", "");
 const KEEP = argFlag("--keep");
@@ -185,6 +196,17 @@ function onEvent(ev: { type: string; data: Record<string, unknown> }) {
 
 // ── Main ──────────────────────────────────────────────────────────────────────
 async function main() {
+  if (
+    THREAD_PROFILE_ARG !== "low" &&
+    THREAD_PROFILE_ARG !== "med" &&
+    THREAD_PROFILE_ARG !== "high"
+  ) {
+    console.error(
+      `${RED}Invalid --thread-profile:${R} ${THREAD_PROFILE_ARG}. Use low, med, or high.`,
+    );
+    process.exit(2);
+  }
+
   // If --list-models, just print and exit.
   if (LIST_MODELS) {
     hr("available models");
@@ -224,6 +246,7 @@ async function main() {
 
   hr("smoke-test");
   console.log(`  ${BOLD}model  ${R}: ${MODEL}`);
+  console.log(`  ${BOLD}threads${R}: ${THREAD_PROFILE}`);
   console.log(`  ${BOLD}stage  ${R}: ${STAGE}`);
   console.log(
     `  ${BOLD}desc   ${R}: ${DESC.slice(0, 80)}${DESC.length > 80 ? "…" : ""}`,
@@ -239,6 +262,7 @@ async function main() {
       name: NAME,
       description: DESC,
       primaryModel: MODEL,
+      threadProfile: THREAD_PROFILE,
       status: "pending",
     })
     .returning();
@@ -248,7 +272,7 @@ async function main() {
 
   // Run main stage
   hr(`running — ${STAGE}`);
-  const pipeline = new Pipeline(project.id, MODEL, onEvent);
+  const pipeline = new Pipeline(project.id, MODEL, onEvent, THREAD_PROFILE);
   try {
     await pipeline.run(STAGE);
   } catch (err) {
@@ -258,7 +282,7 @@ async function main() {
   // Optional feedback pass
   if (FEEDBACK) {
     hr("feedback pass");
-    const fbPipeline = new Pipeline(project.id, MODEL, onEvent);
+    const fbPipeline = new Pipeline(project.id, MODEL, onEvent, THREAD_PROFILE);
     try {
       await fbPipeline.run("feedback", undefined, FEEDBACK);
     } catch (err) {

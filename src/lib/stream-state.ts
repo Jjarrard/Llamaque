@@ -13,6 +13,8 @@ export interface StreamContext {
   onChunk: (token: string) => void;
   /** Optional: notify the host of pipeline activity ("Loading model...", etc.) */
   onActivity?: (message: string) => void;
+  /** Runtime LLM thread profile for this pipeline execution. */
+  threadProfile?: "low" | "med" | "high";
 }
 
 export const streamingStorage = new AsyncLocalStorage<StreamContext>();

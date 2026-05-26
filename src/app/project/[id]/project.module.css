@@ -621,6 +621,47 @@
   align-items: center;
 }
 
+.threadPicker {
+  display: inline-flex;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.threadBtn {
+  background: var(--bg-input);
+  color: var(--text-muted);
+  border: none;
+  border-right: 1px solid var(--border);
+  padding: 0.28rem 0.55rem;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.threadBtn:last-child {
+  border-right: none;
+}
+
+.threadBtn:hover:not(:disabled) {
+  color: var(--text);
+}
+
+.threadBtnActive {
+  background: var(--accent);
+  color: white;
+}
+
+.threadBtn:disabled {
+  opacity: 0.5;
+  cursor: not-allowed;
+}
+
+.highThreadWarning {
+  margin: -0.75rem 0 1rem;
+  font-size: 0.8rem;
+  color: var(--warning);
+}
+
 .deleteBtn {
   background: transparent;
   color: var(--danger);

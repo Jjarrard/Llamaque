@@ -8,6 +8,7 @@
  */
 
 import { streamingStorage } from "@/lib/stream-state";
+import os from "os";
 
 const OLLAMA_BASE_URL = process.env.OLLAMA_BASE_URL || "http://localhost:11434";
 
@@ -48,6 +49,22 @@ const NUM_CTX = 32768;
 
 /** Keep model loaded between calls (seconds). -1 = forever. */
 const KEEP_ALIVE = "30m";
+
+export type ThreadProfile = "low" | "med" | "high";
+
+function logicalCoreCount(): number {
+  if (typeof os.availableParallelism === "function") {
+    return Math.max(1, os.availableParallelism());
+  }
+  return Math.max(1, os.cpus().length);
+}
+
+function numThreadsForProfile(profile: ThreadProfile): number {
+  const cores = logicalCoreCount();
+  if (profile === "low") return Math.max(1, Math.floor(cores / 4));
+  if (profile === "med") return Math.max(1, Math.floor(cores / 2));
+  return cores;
+}
 
 /**
  * CPU thread cap — limits heat and keeps the laptop usable.
@@ -111,6 +128,9 @@ export async function callOllama(
   const streamCtx = streamingStorage.getStore();
   const useStream = streamCtx !== undefined;
   const activity = streamCtx?.onActivity;
+  const numThread = streamCtx?.threadProfile
+    ? numThreadsForProfile(streamCtx.threadProfile)
+    : (NUM_THREAD ?? numThreadsForProfile("med"));
 
   activity?.(`[${role}] sending prompt to ${model}...`);
 
@@ -127,7 +147,7 @@ export async function callOllama(
       temperature: config.temperature,
       num_predict: numPredict,
       num_ctx: NUM_CTX,
-      ...(NUM_THREAD !== undefined ? { num_thread: NUM_THREAD } : {}),
+      ...(numThread !== undefined ? { num_thread: numThread } : {}),
     },
     stop: [">>END"],
   };
