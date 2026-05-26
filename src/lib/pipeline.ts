@@ -63,6 +63,10 @@ import {
   stripLineNumberPrefixes,
 } from "@/lib/agents/editor";
 import { runTestWriter } from "@/lib/agents/test-writer";
+import {
+  analyzeComponent,
+  extractRolesTree,
+} from "@/lib/ops/component-analyzer";
 import { runSummariser } from "@/lib/agents/summariser";
 import { runPlanner } from "@/lib/agents/planner";
 import { runFeedbackPlanner } from "@/lib/agents/feedback-planner";
@@ -716,7 +720,10 @@ export default function ${compName}() {
         await this.runJudgePhase();
 
         if (stage === "execute") {
-          await this.log("SYS", "Execute complete. Review code, then run TDD/QA.");
+          await this.log(
+            "SYS",
+            "Execute complete. Review code, then run TDD/QA.",
+          );
           await this.pauseAndDone();
           return;
         }
@@ -2791,6 +2798,26 @@ export default function ${compName}() {
       if (match) exportName = match[1];
     }
 
+    // Deterministically extract component structure from source before asking the LLM.
+    // This gives the test writer exact prop shapes, button labels, and input presence
+    // without requiring it to read or understand the source code itself.
+    const componentAnalysis =
+      fileContent && fileContent.trim().length > 50
+        ? analyzeComponent(fileContent)
+        : undefined;
+
+    if (componentAnalysis) {
+      await this.log(
+        "TDD",
+        `Component analysis: ${componentAnalysis.requiredProps.length} required props, ` +
+          `${componentAnalysis.buttonTexts.length} buttons (${componentAnalysis.buttonTexts
+            .slice(0, 3)
+            .map((b) => `"${b}"`)
+            .join(", ")}), ` +
+          `hasInput=${componentAnalysis.hasInput}`,
+      );
+    }
+
     let result = await runTestWriter(
       this.model,
       this.projectName,
@@ -2798,10 +2825,9 @@ export default function ${compName}() {
       requirements,
       file,
       exportName,
-      // Pass the actual code when it already exists (re-runs / feedback pass) so
-      // tests use the real prop names. Undefined on first-run (code not written yet).
       fileContent && fileContent.trim().length > 100 ? fileContent : undefined,
       manifestDescription,
+      componentAnalysis,
     );
 
     if (!result.tests) {
@@ -2824,6 +2850,7 @@ export default function ${compName}() {
           ? fileContent
           : undefined,
         manifestDescription,
+        componentAnalysis,
       );
     }
 
@@ -3556,9 +3583,19 @@ output: |
 >>END`;
 
     let userMessage = `Failing test: "${failure.name}"\n`;
-    userMessage += `Error: ${(failure.error || "unknown").slice(0, 500)}\n\n`;
+    userMessage += `Error: ${(failure.error || "unknown").slice(0, 2000)}\n\n`;
+
+    // Extract the vitest accessible-roles tree if present — this is the actual DOM
+    // structure that testing-library sees, produced automatically when getByRole/
+    // getByText/etc. fails. It tells the model exactly what roles and names exist.
+    const rolesTree = extractRolesTree(failure.error || "");
+    if (rolesTree) {
+      userMessage += `Actual accessible roles when component renders:\n${rolesTree}\n\n`;
+      userMessage += `Use only roles and names that appear in the tree above. Do NOT query for names that are not listed.\n\n`;
+    }
+
     if (componentHints.length > 0) {
-      userMessage += `Actual UI elements in the component:\n${componentHints.map((h) => `  - ${h}`).join("\n")}\n\n`;
+      userMessage += `Additional UI hints extracted from component source:\n${componentHints.map((h) => `  - ${h}`).join("\n")}\n\n`;
     }
     userMessage += `Component code (key exports):\n${this.truncateForPrompt(componentCode, 40)}\n\n`;
     userMessage += `Current test file:\n${this.truncateForPrompt(testCode, 60)}\n\n`;

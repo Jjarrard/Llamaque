@@ -1,5 +1,9 @@
 import { callOllama } from "@/lib/ollama";
 import { parseTTM, ResultBlock } from "@/lib/protocol";
+import {
+  ComponentAnalysis,
+  formatAnalysisForPrompt,
+} from "@/lib/ops/component-analyzer";
 
 /**
  * Test Writer Agent — generates tests for code files.
@@ -20,16 +24,13 @@ Rules:
 - Import: import { render, screen, fireEvent } from "@testing-library/react"
 - Import the component: import Component from "./Component"
 - Use ONLY plain vitest assertions: expect(x).toBeTruthy(), expect(x).toBe(y) — do NOT use toBeInTheDocument or any jest-dom matcher
-- CRITICAL: If the component takes required props, you MUST pass them in every render() call. Look at the Requirements to infer prop shapes. Example: render(<Card card={{ id: "1", text: "test" }} onDelete={() => {}} />)
+- CRITICAL: The user message contains a "Component structure" block with EXACT values extracted from the real source. Use those exact values — do NOT invent prop names, button labels, or text content.
 - Write EXACTLY 3 tests:
-  1. renders without crashing: render(<Component ...requiredProps />) — no assertion needed
-  2. key element exists: render then expect(screen.getByRole("button") or getByText(...)).toBeTruthy()
-  3. interaction works: READ THE SOURCE CODE first.
-     - If there is an <input> element: fireEvent.change(input, {target:{value:'TestItem-Alpha-999'}}), submit, then expect(screen.getByText('TestItem-Alpha-999')).toBeTruthy()
-     - If there is NO <input> (only buttons/toggles): use getAllByRole('button')[0] or getByRole('checkbox'), fireEvent.click it, then assert a visible text change
-     - NEVER use getByRole('button', { name: /item-label/i }) — button accessible names are the button's OWN text, not the surrounding item's label
-- Keep each test body under 6 lines
-- Output ONLY test code. Do NOT copy or repeat the source component code. No comments. No explanations.
+  1. renders without crashing — use the required props shape listed in Component structure
+  2. a static text or element is visible — use a heading or button label from Component structure
+  3. interaction — follow the INTERACTION TEST instructions in the Component structure block exactly
+- Keep each test body under 8 lines
+- Output ONLY test code. No comments. No explanations.
 
 Reply with EXACTLY this format:
 >>RESULT
@@ -44,14 +45,14 @@ output: |
     it("renders without crashing", () => {
       render(<Component />);
     });
-    it("shows a button", () => {
+    it("shows heading text", () => {
       render(<Component />);
-      expect(screen.getByRole("button")).toBeTruthy();
+      expect(screen.getByText("Exact Heading From Source")).toBeTruthy();
     });
-    it("button click changes output", () => {
-      const { getByRole, getByText } = render(<Component />);
-      fireEvent.click(getByRole("button"));
-      expect(getByText(/\d/)).toBeTruthy();
+    it("interaction works", () => {
+      render(<Component />);
+      fireEvent.click(screen.getAllByRole("button")[0]);
+      expect(screen.getAllByRole("button").length).toBeGreaterThan(0);
     });
   });
 >>END`;
@@ -153,6 +154,7 @@ export async function runTestWriter(
   exportName?: string,
   fileContent?: string,
   manifestDescription?: string,
+  componentAnalysis?: ComponentAnalysis,
 ): Promise<TestWriterResult> {
   const ext = targetFile?.split(".").pop()?.toLowerCase() || "tsx";
   const isReact = ext === "tsx" || ext === "jsx";
@@ -192,20 +194,23 @@ export async function runTestWriter(
       userMessage += `- Test 1: renders without crashing (pass all required props)\n`;
       userMessage += `- Test 2: the item's NAME or TITLE text appears in the output — use getByText('the-exact-string-you-passed-as-the-name-prop'). Test ONLY the string/label prop, NOT any numeric or computed value like a count, streak, or total.\n`;
       userMessage += `- Test 3: clicking the action button calls the callback prop (e.g. onDelete)\n`;
+      // For leaf components: if we have analysis, inject required props shape
+      if (componentAnalysis && componentAnalysis.requiredProps.length > 0) {
+        userMessage += `\nRequired props (extracted from source): ${componentAnalysis.requiredProps.join(", ")}\n`;
+        userMessage += `Optional props: ${componentAnalysis.optionalProps.join(", ") || "none"}\n`;
+      }
     } else {
       userMessage += `\n\nWrite EXACTLY 3 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`.\n`;
-      userMessage += `READ THE ACTUAL SOURCE CODE provided below before writing any test.\n\n`;
-      userMessage += `- Test 1: renders without crashing — render(<${componentName} />) with no props needed for container components\n`;
-      userMessage += `- Test 2: a key piece of text is visible — use getByText('exact-string-from-source') where the string is a HARDCODED value that appears in the source code (e.g. a label, heading, or placeholder). NOT a computed/dynamic value.\n`;
-      userMessage += `- Test 3: interaction — READ THE SOURCE CODE to pick the right interaction:\n`;
-      userMessage += `  • If there is an <input> in the source: fireEvent.change(input, {target:{value:'TestItem-Alpha-999'}}) then submit/click Add, then getByText('TestItem-Alpha-999')\n`;
-      userMessage += `  • If there is NO <input> (e.g. only buttons/checkboxes): use getAllByRole('button')[0] or getByRole('checkbox') then fireEvent.click — assert a visible change (e.g. a text change or a new element)\n`;
-      userMessage += `CRITICAL rules:\n`;
-      userMessage += `- NEVER use getByRole('button', { name: /item-label/i }) — button accessible names are the button's own text, NOT the nearby item label\n`;
-      userMessage += `- Find buttons by their ACTUAL TEXT from the source: e.g. getByRole('button', { name: /add/i }) or getByRole('button', { name: /mark as done/i })\n`;
-      userMessage += `- When unsure, use getAllByRole('button')[0] — safe and always works if a button exists\n`;
-      userMessage += `- Do NOT assert summary counters like getByText(/Total: 1/) — text split across HTML elements always fails\n`;
-      userMessage += `- Keep each test body under 6 lines\n`;
+      // Inject structured analysis if available — deterministic facts, no guessing needed
+      if (componentAnalysis) {
+        userMessage += `\n${formatAnalysisForPrompt(componentAnalysis, componentName)}\n`;
+      } else {
+        // Fallback when analysis is not available (e.g. code file doesn't exist yet)
+        userMessage += `\n- Test 1: renders without crashing\n`;
+        userMessage += `- Test 2: a key static text or element is visible\n`;
+        userMessage += `- Test 3: interaction — use getAllByRole('button')[0] if buttons exist, or getByRole('checkbox'), then assert a visible change\n`;
+        userMessage += `CRITICAL: button accessible names are the button's own text — NEVER use getByRole('button', { name: /item-label/i })\n`;
+      }
     }
   } else {
     userMessage += `\n\nWrite EXACTLY 3 tests for \`./${baseName}\`. Import using: import * as mod from "./${baseName}"\n`;
@@ -213,10 +218,10 @@ export async function runTestWriter(
     userMessage += `Focus on: does the module load, do main functions return expected types, edge cases.\n`;
   }
 
-  // Inject the actual source code so tests use correct prop names and exports
+  // Inject source code snippet as additional context (supports both leaf and container)
   if (fileContent && fileContent.trim().length > 50) {
     const snippet = fileContent.split("\n").slice(0, 80).join("\n");
-    userMessage += `\n\nACTUAL SOURCE CODE of ${targetFile} (use these exact export names):\n${snippet}`;
+    userMessage += `\n\nFull source of ${targetFile} (for reference — Component structure block above takes priority):\n${snippet}`;
   }
 
   const systemPrompt = isReact
