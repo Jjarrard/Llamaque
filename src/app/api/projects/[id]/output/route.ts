@@ -143,13 +143,16 @@ export async function GET(
     window.onerror = function(msg, src, line, col, err) {
       showError((err && err.stack) || msg);
     };
+    window.addEventListener('unhandledrejection', function(e) {
+      showError((e.reason && e.reason.stack) || String(e.reason));
+    });
   </script>
   <script>
     try {
       var code = ${JSON.stringify(
         `const { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext, createContext, Fragment } = React;\n\n` +
           componentCode +
-          `\n\nvar root = ReactDOM.createRoot(document.getElementById("root"));\nroot.render(React.createElement(typeof ${componentName} !== "undefined" ? ${componentName} : function() { return React.createElement("div", null, "No component found"); }));`,
+          `\n\nclass __ErrorBoundary__ extends React.Component {\n  constructor(props) { super(props); this.state = { err: null }; }\n  static getDerivedStateFromError(e) { return { err: e }; }\n  componentDidCatch(e) {\n    if (typeof showError !== "undefined") showError((e && e.stack) || String(e));\n  }\n  render() {\n    if (this.state.err) return null;\n    return this.props.children;\n  }\n}\n\nvar __Comp__ = typeof ${componentName} !== "undefined" ? ${componentName} : function() { return React.createElement("div", null, "No component found"); };\nvar root = ReactDOM.createRoot(document.getElementById("root"));\nroot.render(React.createElement(__ErrorBoundary__, null, React.createElement(__Comp__)));`,
       )};
 
       var result = Babel.transform(code, {
