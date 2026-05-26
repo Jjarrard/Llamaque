@@ -25,12 +25,14 @@ Rules:
 - Import the component: import Component from "./Component"
 - Use ONLY plain vitest assertions: expect(x).toBeTruthy(), expect(x).toBe(y) — do NOT use toBeInTheDocument or any jest-dom matcher
 - CRITICAL: The user message contains a "Component structure" block with EXACT values extracted from the real source. Use those exact values — do NOT invent prop names, button labels, or text content.
+- CRITICAL: Output EXACTLY ONE top-level describe() block. No second describe(), no nested describe.
+- CRITICAL: Count your closing braces. Every opening { needs exactly one matching }. The file must end with the closing brace of the describe block — nothing after it.
 - Write EXACTLY 3 tests:
   1. renders without crashing — use the required props shape listed in Component structure
   2. a static text or element is visible — use a heading or button label from Component structure
-  3. interaction — follow the INTERACTION TEST instructions in the Component structure block exactly
+  3. interaction — follow the INTERACTION TEST instructions in the Component structure block exactly. This test MUST call fireEvent.click (or fireEvent.change for inputs) AND assert a visible state change afterwards (different text, button count, input value, etc.)
 - Keep each test body under 8 lines
-- Output ONLY test code. No comments. No explanations.
+- Output ONLY test code. No comments. No explanations. No prose after the closing brace.
 
 Reply with EXACTLY this format:
 >>RESULT
@@ -65,11 +67,14 @@ Rules:
 - Do NOT import from any other file. Do NOT invent helper filenames.
 - Do NOT write implementation code — test code ONLY.
 - Use ONLY plain vitest assertions: expect(x).toBe(y), expect(x).toBeTruthy(), expect(() => fn()).toThrow()
+- CRITICAL: Output EXACTLY ONE top-level describe() block. No second describe(), no nested describe.
+- CRITICAL: Count your closing braces. Every opening { needs exactly one matching }. The file must end with the closing brace of the describe block — nothing after it.
 - Write EXACTLY 3 tests:
   1. module loads: expect(mod).toBeTruthy()
   2. a main function returns the expected type or value
   3. an edge case (zero, empty, or invalid input)
 - Keep each test body under 5 lines
+- Output ONLY test code. No prose after the closing brace.
 
 Reply with EXACTLY this format:
 >>RESULT

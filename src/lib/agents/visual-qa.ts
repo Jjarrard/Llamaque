@@ -272,3 +272,113 @@ The attached screenshot is the rendered ${mainFile}. Review it against the spec.
     };
   }
 }
+
+/**
+ * Render-and-collect-errors gate.
+ *
+ * Runs the same preview-HTML render as `runVisualQA` but ONLY collects
+ * runtime errors — no vision call, no screenshot. Used as a mandatory
+ * QA gate (not vision-gated) to catch broken artifacts: cross-file
+ * duplicate identifiers, undefined references, throw-on-mount components,
+ * etc. The per-file TypeScript checks miss these because the preview
+ * inlines all sibling imports into a single virtual file before babel
+ * transforms it.
+ *
+ * Returns:
+ *   { errors: string[], rendered: boolean, skippedReason?: string }
+ *
+ * `errors` contains:
+ *   - Unhandled page errors (page.on("pageerror"))
+ *   - Console.error messages
+ *   - Render fallback markers from the inline error boundary
+ * `rendered` is true if the page loaded without launch failures.
+ * `skippedReason` is set when we couldn't even attempt rendering.
+ */
+export interface RenderErrorReport {
+  errors: string[];
+  rendered: boolean;
+  skippedReason?: string;
+}
+
+export async function renderAndCollectErrors(
+  mainFile: string,
+  outputDir: string,
+): Promise<RenderErrorReport> {
+  if (!fs.existsSync(path.join(outputDir, mainFile))) {
+    return {
+      errors: [],
+      rendered: false,
+      skippedReason: `Main file ${mainFile} not found`,
+    };
+  }
+
+  let html: string;
+  try {
+    ({ html } = buildPreviewHtml(mainFile, outputDir));
+  } catch (e) {
+    return {
+      errors: [],
+      rendered: false,
+      skippedReason: `Preview build failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  const errors: string[] = [];
+
+  try {
+    const browser = await chromium.launch({ headless: true });
+    try {
+      const ctx = await browser.newContext({
+        viewport: { width: 1024, height: 768 },
+      });
+      const page = await ctx.newPage();
+
+      page.on("pageerror", (err) => {
+        errors.push(`pageerror: ${err.message}`);
+      });
+      page.on("console", (msg) => {
+        if (msg.type() === "error") {
+          const text = msg.text();
+          // Filter noise we don't care about
+          if (
+            text.includes("Failed to load resource") ||
+            text.includes("favicon")
+          ) {
+            return;
+          }
+          errors.push(`console.error: ${text}`);
+        }
+      });
+
+      await page.setContent(html, {
+        waitUntil: "networkidle",
+        timeout: 15000,
+      });
+      // Give Babel a moment to transform + React to mount
+      await page.waitForTimeout(500);
+
+      // Look for our inline error boundary fallback marker
+      try {
+        const fallback = await page.evaluate(() => {
+          const el = document.querySelector("[data-render-error]");
+          return el ? el.textContent : null;
+        });
+        if (fallback) errors.push(`render fallback: ${fallback.slice(0, 200)}`);
+      } catch {
+        // ignore
+      }
+    } finally {
+      await browser.close();
+    }
+  } catch (e) {
+    return {
+      errors,
+      rendered: false,
+      skippedReason: `Browser render failed: ${e instanceof Error ? e.message : String(e)}`,
+    };
+  }
+
+  // Deduplicate
+  const unique = Array.from(new Set(errors));
+  return { errors: unique, rendered: true };
+}

@@ -53,6 +53,7 @@ import {
 import { runIterativeQA } from "@/lib/agents/iterative-qa";
 import { runProgressReviewer } from "@/lib/agents/progress-reviewer";
 import { runVisualQA } from "@/lib/agents/visual-qa";
+import { renderAndCollectErrors } from "@/lib/agents/visual-qa";
 import { modelCapabilities } from "@/lib/model-capabilities";
 import {
   runEditor,
@@ -75,6 +76,12 @@ import {
   checkTypeScriptSyntax,
   checkTypeScriptSemantics,
 } from "@/lib/ops/compiler";
+import {
+  findDuplicateSymbols,
+  formatDuplicateIssue,
+  listTopLevelSymbols,
+} from "@/lib/ops/duplicate-check";
+import { detectTruncation } from "@/lib/ops/truncation-check";
 import { validateOutput, autoRepairOutput } from "@/lib/validate";
 import { locateWindows, hashString, LocateCandidate } from "@/lib/locator";
 import {
@@ -1514,6 +1521,38 @@ export default function ${compName}() {
         userMessage += `\n\nSHARED TYPES (use these exact definitions):\n${this.contractSnippet}`;
       }
 
+      // Cross-file symbol lock: collect every top-level symbol already
+      // declared in sibling files on disk and tell the model NOT to
+      // redeclare them. Catches the cross-file duplicate-identifier
+      // failure mode (e.g. Game of Life declaring `countNeighbors` in
+      // both GameLogic.ts and GameOfLifeSimulator.tsx) that per-file TS
+      // checks cannot see — the preview HTML inlines siblings and the
+      // duplicate then throws at mount.
+      {
+        const outDir = this.outputDir();
+        const lockedSymbols = new Map<string, string>(); // name → owning file
+        for (const m of this.manifest) {
+          if (m.path === filePath) continue;
+          const sibPath = path.join(outDir, m.path);
+          if (!fs.existsSync(sibPath)) continue;
+          const sibContent = fs.readFileSync(sibPath, "utf-8");
+          if (sibContent.trim().length < 50) continue;
+          for (const sym of listTopLevelSymbols(m.path, sibContent)) {
+            // Skip ultra-common single-letter / framework names that
+            // would generate noise: React, useState, useEffect, etc.
+            if (/^(React|use[A-Z]\w*)$/.test(sym)) continue;
+            if (!lockedSymbols.has(sym)) lockedSymbols.set(sym, m.path);
+          }
+        }
+        if (lockedSymbols.size > 0) {
+          const lines = Array.from(lockedSymbols.entries())
+            .slice(0, 40)
+            .map(([name, owner]) => `  - ${name} (defined in ${owner})`)
+            .join("\n");
+          userMessage += `\n\nEXISTING SYMBOLS — DO NOT REDECLARE these names anywhere in your file. If you need them, import from the listed file:\n${lines}`;
+        }
+      }
+
       // On the first step only, inject context from already-completed files.
       // Priority order:
       //   1. Actual code of files this file directly imports (planned dep graph)
@@ -1772,11 +1811,27 @@ export default function ${compName}() {
             patchableExts.includes(fileExt)
               ? checkTypeScriptSemantics(filePath, candidate)
               : [];
+          const patchDupes =
+            patchValidation.valid &&
+            patchSyntax.length === 0 &&
+            patchSemantic.length === 0 &&
+            patchableExts.includes(fileExt)
+              ? findDuplicateSymbols(filePath, candidate)
+              : [];
+          const patchTruncation =
+            patchValidation.valid &&
+            patchSyntax.length === 0 &&
+            patchSemantic.length === 0 &&
+            patchDupes.length === 0
+              ? detectTruncation(filePath, candidate)
+              : [];
 
           if (
             patchValidation.valid &&
             patchSyntax.length === 0 &&
-            patchSemantic.length === 0
+            patchSemantic.length === 0 &&
+            patchDupes.length === 0 &&
+            patchTruncation.length === 0
           ) {
             await this.writeOutputFile(filePath, candidate);
             stepsCompleted++;
@@ -1794,7 +1849,11 @@ export default function ${compName}() {
               ? patchValidation.reason
               : patchSyntax.length > 0
                 ? `TS syntax: ${patchSyntax.join("; ")}`
-                : `TS semantic: ${patchSemantic.join("; ")}`;
+                : patchSemantic.length > 0
+                  ? `TS semantic: ${patchSemantic.join("; ")}`
+                  : patchDupes.length > 0
+                    ? `duplicate symbols: ${patchDupes.map(formatDuplicateIssue).join("; ")}`
+                    : `truncation: ${patchTruncation.join("; ")}`;
             await this.log(
               "QA",
               `Step ${i + 1} patch invalid after ${totalBlocks} block(s) (${reason}) — falling back to full rewrite`,
@@ -1961,6 +2020,71 @@ export default function ${compName}() {
             stepUserMessage =
               userMessage +
               `\n\nYour previous output has TypeScript type errors:\n${errorSummary}\nFix these errors and rewrite the complete file.`;
+            continue;
+          }
+
+          // AST duplicate-symbol check — catches the in-file redeclaration
+          // pattern that the small model sometimes emits (e.g. declaring
+          // the same `const seconds` twice in one component scope).
+          const dupes = findDuplicateSymbols(filePath, output);
+          if (dupes.length > 0) {
+            const errorSummary = dupes.map(formatDuplicateIssue).join("; ");
+            await this.log(
+              "QA",
+              `Step ${i + 1} attempt ${attempt} duplicate symbols: ${errorSummary}`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            lastGarbageOutput = output;
+            const sig = `DUP:${errorSummary.slice(0, 80)}`;
+            if (lastErrorSignature === sig) {
+              repeatedErrorCount++;
+            } else {
+              lastErrorSignature = sig;
+              repeatedErrorCount = 1;
+            }
+            if (repeatedErrorCount >= 2) {
+              await this.log(
+                "QA",
+                `Step ${i + 1}: identical duplicate-symbol error twice — short-circuiting to recovery`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+              break;
+            }
+            stepUserMessage =
+              userMessage +
+              `\n\nYour previous output declared the same symbol(s) twice in the same scope:\n${errorSummary}\nRewrite the complete file with each symbol declared EXACTLY ONCE.`;
+            continue;
+          }
+
+          // Truncation check — catches mid-statement cutoffs (unbalanced
+          // braces, trailing operators, bare-identifier last line).
+          const truncReasons = detectTruncation(filePath, output);
+          if (truncReasons.length > 0) {
+            const errorSummary = truncReasons.join("; ");
+            await this.log(
+              "QA",
+              `Step ${i + 1} attempt ${attempt} truncation: ${errorSummary}`,
+              tasksForThisStep[0]?.id || taskGroup[0].id,
+            );
+            lastGarbageOutput = output;
+            const sig = `TRUNC:${errorSummary.slice(0, 80)}`;
+            if (lastErrorSignature === sig) {
+              repeatedErrorCount++;
+            } else {
+              lastErrorSignature = sig;
+              repeatedErrorCount = 1;
+            }
+            if (repeatedErrorCount >= 2) {
+              await this.log(
+                "QA",
+                `Step ${i + 1}: identical truncation twice — short-circuiting to recovery`,
+                tasksForThisStep[0]?.id || taskGroup[0].id,
+              );
+              break;
+            }
+            stepUserMessage =
+              userMessage +
+              `\n\nYour previous output appears truncated: ${errorSummary}. Rewrite the COMPLETE file — make sure every block, function, and statement is properly closed.`;
             continue;
           }
 
@@ -2683,6 +2807,8 @@ export default function ${compName}() {
    */
   private async runJudgePhase() {
     const SUBSTANTIAL = 150; // non-whitespace chars
+    const MIN_STATEMENTS = 5; // semicolons/blocks for non-stub
+    const MAX_TODO_RATIO = 0.3; // > this fraction of lines containing TODO/FIXME/XXX = stub
 
     const tsFiles = this.manifest.filter((f) =>
       ["ts", "tsx", "jsx"].includes(
@@ -2698,6 +2824,7 @@ export default function ${compName}() {
     let substantial = 0;
     let thin = 0;
     let missing = 0;
+    const thinReasons: string[] = [];
 
     for (const file of tsFiles) {
       const content = this.getCurrentFileContent(file.path);
@@ -2706,23 +2833,62 @@ export default function ${compName}() {
         continue;
       }
       const nonWs = content.replace(/\s/g, "").length;
-      if (nonWs >= SUBSTANTIAL) substantial++;
-      else thin++;
+      const lines = content.split("\n");
+      const nonBlankLines = lines.filter((l) => l.trim().length > 0);
+      // Count rough statement-ish lines (lines ending in `;` or opening a block)
+      const stmtCount = nonBlankLines.filter((l) =>
+        /[;{]\s*$/.test(l.trimEnd()),
+      ).length;
+      const todoLines = nonBlankLines.filter((l) =>
+        /\b(TODO|FIXME|XXX|placeholder|stub)\b/i.test(l),
+      ).length;
+      const todoRatio = nonBlankLines.length
+        ? todoLines / nonBlankLines.length
+        : 0;
+      // Detect default-empty render bodies for tsx/jsx
+      const isEmptyComponent =
+        /\.(tsx|jsx)$/i.test(file.path) &&
+        /return\s*\(\s*<>\s*<\/>\s*\)|return\s+null\s*;|return\s*<\s*\/?\s*>/.test(
+          content,
+        );
+
+      const isThin =
+        nonWs < SUBSTANTIAL ||
+        stmtCount < MIN_STATEMENTS ||
+        todoRatio > MAX_TODO_RATIO ||
+        isEmptyComponent;
+
+      if (!isThin) {
+        substantial++;
+      } else {
+        thin++;
+        const why: string[] = [];
+        if (nonWs < SUBSTANTIAL) why.push(`${nonWs}<${SUBSTANTIAL} chars`);
+        if (stmtCount < MIN_STATEMENTS)
+          why.push(`${stmtCount}<${MIN_STATEMENTS} stmts`);
+        if (todoRatio > MAX_TODO_RATIO)
+          why.push(`${Math.round(todoRatio * 100)}% TODO`);
+        if (isEmptyComponent) why.push("empty render");
+        thinReasons.push(`${file.path} (${why.join(", ")})`);
+      }
     }
 
     const total = tsFiles.length;
     const summary = `${substantial}/${total} files substantial, ${thin} thin, ${missing} missing`;
+    const detail = thinReasons.length
+      ? ` — thin: ${thinReasons.slice(0, 3).join("; ")}${thinReasons.length > 3 ? ` +${thinReasons.length - 3} more` : ""}`
+      : "";
 
     if (missing + thin > substantial) {
       await this.log(
         "JUDGE",
-        `${summary} → SKIP_VITEST: most output is insufficient; skipping test runner to avoid crash-loop`,
+        `${summary} → SKIP_VITEST: most output is insufficient; skipping test runner to avoid crash-loop${detail}`,
       );
       this.judgeVerdict = "skip_vitest";
     } else if (thin > 0 || missing > 0) {
       await this.log(
         "JUDGE",
-        `${summary} → WARN: some files are thin; QA may partially fail`,
+        `${summary} → WARN: some files are thin; QA may partially fail${detail}`,
       );
       this.judgeVerdict = "warn";
     } else {
@@ -2750,9 +2916,12 @@ export default function ${compName}() {
     if (this.judgeVerdict === "skip_vitest") {
       await this.log(
         "QA",
-        "Judge: skipping vitest (insufficient output) — running holistic + consistency only",
+        "Judge: skipping vitest (insufficient output) — running holistic + render gate + consistency only",
       );
       await this.runHolisticReviewPass();
+      // Render gate still runs even when vitest is skipped — a thin file
+      // can still throw at mount, and surfacing that is honest reporting.
+      await this.runRenderErrorGate();
       await this.runConsistencyCheck();
       return;
     }
@@ -2782,6 +2951,13 @@ export default function ${compName}() {
     // count, e.g. a project may build cleanly but be missing the "delete"
     // button the spec asked for.
     await this.runProgressReviewPass();
+
+    // Render gate — render the UI in headless Chromium and collect any
+    // runtime errors. Runs for ALL models (not vision-gated). Catches
+    // cross-file bugs that per-file TS checks miss: duplicate identifiers
+    // after import inlining, undefined references, throw-on-mount, etc.
+    // If errors are found, fixes are attempted via runDeveloperPatch.
+    await this.runRenderErrorGate();
 
     // Visual QA — render the UI in headless Chromium and ask a vision
     // model whether it matches the spec. Only runs for vision-capable
@@ -3094,6 +3270,13 @@ export default function ${compName}() {
     // producing syntactically-broken code for the same test, the test itself
     // might be impossible — trigger repairSingleTest instead of spinning.
     const validationFailStreak = new Map<string, number>();
+    // Track the auto-repair signature from the previous round. If the same
+    // auto-repair fix fires two rounds in a row, the model is stuck in a
+    // repeating pattern (e.g. always emitting a trailing brace). Burning 5
+    // rounds × 40s on the same mistake is the worst-case time sink — break
+    // early and let outer QA passes pick up the slack.
+    let lastAutoRepairSig: string | null = null;
+    let autoRepairRepeatCount = 0;
     while (round < Pipeline.MAX_TEST_FIX_ROUNDS && !this.aborted) {
       round++;
 
@@ -3168,6 +3351,27 @@ export default function ${compName}() {
       );
       if (fixes.length > 0) {
         await this.log("TDD", `Auto-repaired: ${fixes.join(", ")}`);
+        // Repeat-signature short-circuit: if the same auto-repair fired
+        // last round, the model is stuck in a loop producing the same
+        // structural mistake. Break out — outer QA passes are cheaper
+        // than another 4 rounds × ~40s of identical failure.
+        const sig = fixes.join("|");
+        if (sig === lastAutoRepairSig) {
+          autoRepairRepeatCount++;
+          if (autoRepairRepeatCount >= 1) {
+            await this.log(
+              "TDD",
+              `Round ${round}: same auto-repair fired twice in a row (${sig.slice(0, 60)}) — short-circuiting TDD repair loop`,
+            );
+            break;
+          }
+        } else {
+          lastAutoRepairSig = sig;
+          autoRepairRepeatCount = 0;
+        }
+      } else {
+        lastAutoRepairSig = null;
+        autoRepairRepeatCount = 0;
       }
 
       const validation = validateOutput(repaired, primaryFile);
@@ -4424,100 +4628,124 @@ output: |
 
       if (fixed) continue;
 
-      // ── Attempt 2: Full-file rewrite fallback ──
-      let userMessage = `Project: ${this.projectName} — ${this.projectDescription}\n\n`;
-      userMessage += `Current ${resolvedFile}:\n${existingContent}\n\n`;
-      userMessage += `QA found this issue:\nProblem: ${problem}\nFix: ${fix}\n\n`;
-      userMessage += `Apply ONLY this fix. Keep everything else exactly the same. Rewrite the COMPLETE ${resolvedFile} file.`;
+      // ── Attempt 2: SEARCH/REPLACE patch (non-destructive) ──
+      // The prior full-rewrite fallback was destructive: it routinely
+      // reintroduced cross-file duplicates and dropped working code while
+      // "fixing" one issue. Patch path keeps the rest of the file intact.
+      const numberedForPatch = existingContent
+        .split("\n")
+        .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
+        .join("\n");
+      const patchInstruction = `QA issue: ${problem}. Suggested fix: ${fix}. Apply ONLY the minimum diff to address this issue.`;
 
-      userMessage = this.withCustomInstructions(userMessage);
-
-      const devResult = await runDeveloper(
+      const patchRes = await runDeveloperPatch(
         this.model,
-        userMessage,
         resolvedFile,
+        numberedForPatch,
+        patchInstruction,
+        this.projectName,
+        this.projectDescription,
       );
 
-      if (devResult.block) {
-        const output = devResult.block.output;
-        const { repaired } = autoRepairOutput(output, resolvedFile);
-        const validation = validateOutput(repaired, resolvedFile);
-        const rewriteExt = (resolvedFile.split(".").pop() ?? "").toLowerCase();
-        const rewriteSyntaxErrors =
-          validation.valid && ["ts", "tsx", "js", "jsx"].includes(rewriteExt)
-            ? checkTypeScriptSyntax(resolvedFile, repaired)
-            : [];
-        if (validation.valid && rewriteSyntaxErrors.length === 0) {
-          // Oscillation guard: reject if this content was seen before
-          const fp = (c: string) => `${c.length}:${c.slice(0, 200)}`;
-          const seenHashesFull =
-            fileContentHashes.get(resolvedFile) ?? new Set<string>();
-          if (seenHashesFull.has(fp(repaired))) {
-            await this.log(
-              "QA",
-              `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`,
-            );
-            previousFixes.push(`${problem} (skipped — oscillation detected)`);
-            fileFailCount.set(
-              resolvedFile,
-              (fileFailCount.get(resolvedFile) ?? 0) + 1,
-            );
-          } else {
-            seenHashesFull.add(fp(existingContent));
-            fileContentHashes.set(resolvedFile, seenHashesFull);
-            await this.writeOutputFile(resolvedFile, repaired);
-            // Regression guard: revert if the fix made tests crash or increased
-            // the failure count relative to the pre-fix baseline.
-            if (!qaRunTests(resolvedFile, baselineFailures)) {
-              await this.writeOutputFile(resolvedFile, existingContent);
-              await this.log(
-                "QA",
-                `Round ${round}: Full rewrite of ${resolvedFile} broke tests — reverting`,
-              );
-              fileFailCount.set(
-                resolvedFile,
-                (fileFailCount.get(resolvedFile) ?? 0) + 1,
-              );
-              previousFixes.push(`${problem} (fix reverted — broke tests)`);
-            } else {
-              await this.log(
-                "QA",
-                `Round ${round}: Fixed ${resolvedFile} (${devResult.tokens} tokens)`,
-                undefined,
-                devResult.prompt,
-                devResult.raw,
-              );
-              previousFixes.push(
-                `${problem} → APPLIED: ${fix} (full rewrite in ${resolvedFile})`,
-              );
-            }
-          }
-        } else {
-          const reason = !validation.valid
-            ? validation.reason!
-            : `TS syntax: ${rewriteSyntaxErrors[0]}`;
+      const patchBlocks = parsePatch(patchRes.raw);
+      if (patchBlocks.length === 0) {
+        await this.log(
+          "QA",
+          `Round ${round}: No patch block produced for ${resolvedFile} — keeping original`,
+          undefined,
+          patchRes.prompt,
+          patchRes.raw,
+        );
+        previousFixes.push(`${problem} (no patch produced)`);
+        continue;
+      }
+
+      const applied = applyPatch(existingContent, [patchBlocks[0]]);
+      if (!applied.ok) {
+        fileFailCount.set(
+          resolvedFile,
+          (fileFailCount.get(resolvedFile) ?? 0) + 1,
+        );
+        await this.log(
+          "QA",
+          `Round ${round}: Patch SEARCH didn't match in ${resolvedFile} (${applied.reason}) — keeping original`,
+          undefined,
+          patchRes.prompt,
+          patchRes.raw,
+        );
+        previousFixes.push(`${problem} (patch search miss)`);
+        continue;
+      }
+
+      const { repaired } = autoRepairOutput(applied.content, resolvedFile);
+      const candidate = repaired || applied.content;
+      const validation = validateOutput(candidate, resolvedFile);
+      const rewriteExt = (resolvedFile.split(".").pop() ?? "").toLowerCase();
+      const rewriteSyntaxErrors =
+        validation.valid && ["ts", "tsx", "js", "jsx"].includes(rewriteExt)
+          ? checkTypeScriptSyntax(resolvedFile, candidate)
+          : [];
+      if (validation.valid && rewriteSyntaxErrors.length === 0) {
+        // Oscillation guard: reject if this content was seen before
+        const fp = (c: string) => `${c.length}:${c.slice(0, 200)}`;
+        const seenHashesFull =
+          fileContentHashes.get(resolvedFile) ?? new Set<string>();
+        if (seenHashesFull.has(fp(candidate))) {
+          await this.log(
+            "QA",
+            `Round ${round}: Oscillation detected — ${resolvedFile} would revert to a previous state, skipping`,
+          );
+          previousFixes.push(`${problem} (skipped — oscillation detected)`);
           fileFailCount.set(
             resolvedFile,
             (fileFailCount.get(resolvedFile) ?? 0) + 1,
           );
-          await this.log(
-            "QA",
-            `Round ${round}: Fix for ${resolvedFile} failed validation: ${reason} — keeping original`,
-            undefined,
-            devResult.prompt,
-            devResult.raw,
-          );
-          previousFixes.push(`${problem} (fix failed validation)`);
+        } else {
+          seenHashesFull.add(fp(existingContent));
+          fileContentHashes.set(resolvedFile, seenHashesFull);
+          await this.writeOutputFile(resolvedFile, candidate);
+          // Regression guard: revert if the fix made tests crash or increased
+          // the failure count relative to the pre-fix baseline.
+          if (!qaRunTests(resolvedFile, baselineFailures)) {
+            await this.writeOutputFile(resolvedFile, existingContent);
+            await this.log(
+              "QA",
+              `Round ${round}: Patch on ${resolvedFile} broke tests — reverting`,
+            );
+            fileFailCount.set(
+              resolvedFile,
+              (fileFailCount.get(resolvedFile) ?? 0) + 1,
+            );
+            previousFixes.push(`${problem} (fix reverted — broke tests)`);
+          } else {
+            await this.log(
+              "QA",
+              `Round ${round}: Patched ${resolvedFile} (${applied.blocksApplied} block, ${patchRes.tokens} tokens)`,
+              undefined,
+              patchRes.prompt,
+              patchRes.raw,
+            );
+            previousFixes.push(
+              `${problem} → APPLIED: ${fix} (patched in ${resolvedFile})`,
+            );
+          }
         }
       } else {
+        const reason = !validation.valid
+          ? validation.reason!
+          : `TS syntax: ${rewriteSyntaxErrors[0]}`;
+        fileFailCount.set(
+          resolvedFile,
+          (fileFailCount.get(resolvedFile) ?? 0) + 1,
+        );
         await this.log(
           "QA",
-          `Round ${round}: Could not fix ${resolvedFile} — Developer parse failure`,
+          `Round ${round}: Patched ${resolvedFile} failed validation: ${reason} — keeping original`,
           undefined,
-          devResult.prompt,
-          devResult.raw,
+          patchRes.prompt,
+          patchRes.raw,
         );
-        previousFixes.push(`${problem} (Developer parse failure)`);
+        previousFixes.push(`${problem} (patch failed validation)`);
       }
     }
 
@@ -4760,6 +4988,148 @@ output: |
   // ─────────────────────────────────────────────
   //  PHASE 8: VISUAL QA (vision-capable models only)
   // ─────────────────────────────────────────────
+
+  /**
+   * Mandatory render gate — load the built artifact in headless Chromium
+   * and collect any runtime errors (page errors, console.error). Runs for
+   * ALL models, not just vision-capable ones.
+   *
+   * This is the only check that catches cross-file bugs introduced when
+   * the preview HTML inlines sibling imports: duplicate identifiers,
+   * undefined references, throw-on-mount components. Per-file TypeScript
+   * checks miss these because each file is valid in isolation.
+   *
+   * On errors, attempts a single SEARCH/REPLACE patch fix per file before
+   * surfacing to the user.
+   */
+  private async runRenderErrorGate() {
+    if (this.aborted) return;
+    const outDir = this.outputDir();
+    if (!fs.existsSync(outDir)) return;
+
+    const tsxFiles = this.manifest.filter((f) => /\.(tsx|jsx)$/i.test(f.path));
+    if (tsxFiles.length === 0) return;
+    const mainFile =
+      tsxFiles.find((f) => /^app\.(tsx|jsx)$/i.test(f.path))?.path ??
+      tsxFiles[tsxFiles.length - 1].path;
+
+    await this.log(
+      "QA",
+      `Render gate: loading ${mainFile} in headless Chromium...`,
+    );
+
+    let report;
+    try {
+      report = await renderAndCollectErrors(mainFile, outDir);
+    } catch (err) {
+      await this.log(
+        "QA",
+        `Render gate crashed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+      return;
+    }
+
+    if (report.skippedReason) {
+      await this.log("QA", `Render gate skipped: ${report.skippedReason}`);
+      return;
+    }
+
+    if (report.errors.length === 0) {
+      await this.log("QA", `Render gate: ${mainFile} mounts cleanly`);
+      return;
+    }
+
+    await this.log(
+      "QA",
+      `Render gate found ${report.errors.length} runtime error(s) in ${mainFile}:`,
+    );
+    for (const e of report.errors) {
+      await this.log("QA", `  • ${e.slice(0, 200)}`);
+    }
+
+    // Attempt one fix round: feed the first error as a patch instruction
+    // against the main file. If the model can't fix it in one shot, leave
+    // the errors logged — surfacing failure honestly is better than
+    // claiming false success.
+    const primaryError = report.errors[0];
+    const fullPath = path.join(outDir, mainFile);
+    if (!fs.existsSync(fullPath)) return;
+
+    const current = fs.readFileSync(fullPath, "utf-8");
+    const numbered = current
+      .split("\n")
+      .map((line, idx) => `${String(idx + 1).padStart(4, " ")} | ${line}`)
+      .join("\n");
+    const featureInstruction = `RUNTIME ERROR when rendering ${mainFile}: ${primaryError}. Fix the root cause in this file. If the error is a duplicate-identifier across files, REMOVE the duplicate from this file and import from the file that defines it.`;
+
+    try {
+      const patchRes = await runDeveloperPatch(
+        this.model,
+        mainFile,
+        numbered,
+        featureInstruction,
+        this.projectName,
+        this.projectDescription,
+      );
+      const blocks = parsePatch(patchRes.raw);
+      if (blocks.length === 0) {
+        await this.log(
+          "QA",
+          `Render gate: no patch produced — leaving errors for user`,
+        );
+        return;
+      }
+      const applied = applyPatch(current, [blocks[0]]);
+      if (!applied.ok) {
+        await this.log(
+          "QA",
+          `Render gate: patch failed (${applied.reason}) — leaving errors for user`,
+        );
+        return;
+      }
+
+      const { repaired } = autoRepairOutput(applied.content, mainFile);
+      const candidate = repaired || applied.content;
+      const validation = validateOutput(candidate, mainFile, {
+        allowScaffold: true,
+      });
+      const syntax = validation.valid
+        ? checkTypeScriptSyntax(mainFile, candidate)
+        : [];
+      if (!validation.valid || syntax.length > 0) {
+        await this.log(
+          "QA",
+          `Render gate: patch invalid (${!validation.valid ? validation.reason : syntax.join("; ")}) — leaving errors for user`,
+        );
+        return;
+      }
+
+      await this.writeOutputFile(mainFile, candidate);
+      await this.log(
+        "QA",
+        `Render gate: patched ${mainFile} — re-rendering to verify`,
+      );
+
+      // Re-render once to verify
+      const verify = await renderAndCollectErrors(mainFile, outDir);
+      if (verify.errors.length === 0) {
+        await this.log("QA", `Render gate: errors resolved`);
+      } else {
+        await this.log(
+          "QA",
+          `Render gate: ${verify.errors.length} error(s) remain after patch — surfacing to user`,
+        );
+        for (const e of verify.errors) {
+          await this.log("QA", `  • ${e.slice(0, 200)}`);
+        }
+      }
+    } catch (err) {
+      await this.log(
+        "QA",
+        `Render gate: patch attempt crashed: ${err instanceof Error ? err.message : String(err)}`,
+      );
+    }
+  }
 
   /**
    * Render the main TSX file in headless Chromium, screenshot it, and ask a
