@@ -3753,7 +3753,27 @@ output: |
       return false;
     }
 
-    await this.log("TDD", `Test repair ${rewriteMode ? "(rewrite)" : "(patch)"} succeeded`);
+    // Only claim success if the specific failing test is now passing.
+    // A non-crashing but still-failing test is not a successful repair.
+    const stillFailing = retryResult.tests.find(
+      (t) => t.name === failure.name && t.status === "fail",
+    );
+    if (stillFailing) {
+      await this.log(
+        "TDD",
+        `Test repair ${rewriteMode ? "(rewrite)" : "(patch)"} ran but test still fails`,
+      );
+      // Update the error fingerprint so the next call sees new evidence
+      // (the repaired output may produce a different error)
+      const newFingerprint = (stillFailing.error || "").slice(0, 300);
+      this.lastRepairError.set(failure.name, newFingerprint);
+      return false;
+    }
+
+    await this.log(
+      "TDD",
+      `Test repair ${rewriteMode ? "(rewrite)" : "(patch)"} succeeded`,
+    );
     return true;
   }
 

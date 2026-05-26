@@ -47,7 +47,7 @@ if (fs.existsSync(envLocalPath)) {
 }
 
 import { db } from "@/db";
-import { projects } from "@/db/schema";
+import { projects, tasks, references, logs } from "@/db/schema";
 import { Pipeline, type PipelineStage } from "@/lib/pipeline";
 import { getAvailableModels } from "@/lib/ollama";
 import { eq } from "drizzle-orm";
@@ -369,6 +369,10 @@ async function main() {
       console.log(`  Open: http://localhost:3000/project/${project.id}`);
     }
   } else {
+    // Delete child rows first to satisfy FK constraints before removing the project
+    await db.delete(tasks).where(eq(tasks.projectId, project.id));
+    await db.delete(references).where(eq(references.projectId, project.id));
+    await db.delete(logs).where(eq(logs.projectId, project.id));
     await db.delete(projects).where(eq(projects.id, project.id));
     if (fs.existsSync(outDir)) fs.rmSync(outDir, { recursive: true });
     console.log(
