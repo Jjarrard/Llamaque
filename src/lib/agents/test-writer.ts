@@ -24,8 +24,11 @@ Rules:
 - Write EXACTLY 3 tests:
   1. renders without crashing: render(<Component ...requiredProps />) — no assertion needed
   2. key element exists: render then expect(screen.getByRole("button") or getByText(...)).toBeTruthy()
-  3. interaction works: fireEvent.click(button) then assert the NEW ITEM APPEARS by its own text. Use a UNIQUE test string like "TestItem-Alpha-999" so it cannot collide with pre-seeded data. Do NOT use getByText(/Label: value/) for text split across HTML child elements (e.g. "Total: <strong>1</strong>") — that ALWAYS FAILS. Instead check: expect(screen.getByText('TestItem-Alpha-999')).toBeTruthy() or expect(screen.getAllByRole('listitem').length).toBeGreaterThan(0).
-- Keep each test body under 5 lines
+  3. interaction works: READ THE SOURCE CODE first.
+     - If there is an <input> element: fireEvent.change(input, {target:{value:'TestItem-Alpha-999'}}), submit, then expect(screen.getByText('TestItem-Alpha-999')).toBeTruthy()
+     - If there is NO <input> (only buttons/toggles): use getAllByRole('button')[0] or getByRole('checkbox'), fireEvent.click it, then assert a visible text change
+     - NEVER use getByRole('button', { name: /item-label/i }) — button accessible names are the button's OWN text, not the surrounding item's label
+- Keep each test body under 6 lines
 - Output ONLY test code. Do NOT copy or repeat the source component code. No comments. No explanations.
 
 Reply with EXACTLY this format:
@@ -190,11 +193,19 @@ export async function runTestWriter(
       userMessage += `- Test 2: the item's NAME or TITLE text appears in the output — use getByText('the-exact-string-you-passed-as-the-name-prop'). Test ONLY the string/label prop, NOT any numeric or computed value like a count, streak, or total.\n`;
       userMessage += `- Test 3: clicking the action button calls the callback prop (e.g. onDelete)\n`;
     } else {
-      userMessage += `\n\nWrite 3-5 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`. Focus on:\n`;
-      userMessage += `- Does it render?\n`;
-      userMessage += `- Are key UI elements present?\n`;
-      userMessage += `- Do inputs accept and reflect typed values?\n`;
-      userMessage += `- Does the main flow work? Type a UNIQUE test string like "TestItem-Alpha-999" into the input, submit, then assert it appears using getByText('TestItem-Alpha-999'). Use UNIQUE names that will NOT collide with any pre-seeded or default data in the component. Do NOT assert a summary counter (e.g. getByText(/Total: 1/)) — that text is split across HTML elements and will always fail.\n`;
+      userMessage += `\n\nWrite EXACTLY 3 tests for the React component exported as \`${componentName}\` from \`./${baseName}\`.\n`;
+      userMessage += `READ THE ACTUAL SOURCE CODE provided below before writing any test.\n\n`;
+      userMessage += `- Test 1: renders without crashing — render(<${componentName} />) with no props needed for container components\n`;
+      userMessage += `- Test 2: a key piece of text is visible — use getByText('exact-string-from-source') where the string is a HARDCODED value that appears in the source code (e.g. a label, heading, or placeholder). NOT a computed/dynamic value.\n`;
+      userMessage += `- Test 3: interaction — READ THE SOURCE CODE to pick the right interaction:\n`;
+      userMessage += `  • If there is an <input> in the source: fireEvent.change(input, {target:{value:'TestItem-Alpha-999'}}) then submit/click Add, then getByText('TestItem-Alpha-999')\n`;
+      userMessage += `  • If there is NO <input> (e.g. only buttons/checkboxes): use getAllByRole('button')[0] or getByRole('checkbox') then fireEvent.click — assert a visible change (e.g. a text change or a new element)\n`;
+      userMessage += `CRITICAL rules:\n`;
+      userMessage += `- NEVER use getByRole('button', { name: /item-label/i }) — button accessible names are the button's own text, NOT the nearby item label\n`;
+      userMessage += `- Find buttons by their ACTUAL TEXT from the source: e.g. getByRole('button', { name: /add/i }) or getByRole('button', { name: /mark as done/i })\n`;
+      userMessage += `- When unsure, use getAllByRole('button')[0] — safe and always works if a button exists\n`;
+      userMessage += `- Do NOT assert summary counters like getByText(/Total: 1/) — text split across HTML elements always fails\n`;
+      userMessage += `- Keep each test body under 6 lines\n`;
     }
   } else {
     userMessage += `\n\nWrite EXACTLY 3 tests for \`./${baseName}\`. Import using: import * as mod from "./${baseName}"\n`;
