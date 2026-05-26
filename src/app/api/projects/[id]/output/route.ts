@@ -81,7 +81,15 @@ export async function GET(
     // If the requested file is a leaf component (not a root file), prefer rendering
     // the root file (App.tsx / index.tsx / main.tsx) so it renders with real props.
     // Leaf components rendered in isolation crash because they have no props.
-    const ROOT_NAMES = ["App.tsx", "App.jsx", "app.tsx", "index.tsx", "index.jsx", "main.tsx", "Main.tsx"];
+    const ROOT_NAMES = [
+      "App.tsx",
+      "App.jsx",
+      "app.tsx",
+      "index.tsx",
+      "index.jsx",
+      "main.tsx",
+      "Main.tsx",
+    ];
     const requestedBasename = path.basename(file);
     const isRootFile = ROOT_NAMES.includes(requestedBasename);
     let previewFile = file;
@@ -109,9 +117,10 @@ export async function GET(
       /export\s+default\s+function\s+(\w+)|(?:^|\n)\s*function\s+(\w+)/,
     );
     const componentName = fnNameMatch?.[1] || fnNameMatch?.[2] || "Component";
-    const previewBanner = previewFile !== file
-      ? `<div style="position:fixed;bottom:0;right:0;background:#1e1e2e;color:#a6e3a1;font:11px monospace;padding:4px 8px;border-radius:4px 0 0 0;opacity:0.85;z-index:9998">preview: ${previewFile}</div>`
-      : "";
+    const previewBanner =
+      previewFile !== file
+        ? `<div style="position:fixed;bottom:0;right:0;background:#1e1e2e;color:#a6e3a1;font:11px monospace;padding:4px 8px;border-radius:4px 0 0 0;opacity:0.85;z-index:9998">preview: ${previewFile}</div>`
+        : "";
 
     // Escape backticks and ${} in user code so they don't break the JS template literal
     const escapedCode = componentCode

@@ -151,6 +151,24 @@ export class Pipeline {
   private contractSnippet: string = "";
   /** Last test failure message from runTestQA, passed to iterativeQA for focused fixing */
   private lastTestFailure: string | undefined = undefined;
+  /**
+   * Track the last error seen per test name during repair.
+   * If repairSingleTest is called with the same error twice in a row, the patch
+   * approach is stuck — escalate to rewrite or regenerate mode.
+   * Cleared at the start of each runTestQA call.
+   */
+  private lastRepairError = new Map<string, string>();
+  /**
+   * Track how many times the regenerate (runTestWriter from scratch) path has
+   * been attempted per test name. Cap at 1 to avoid infinite loops.
+   */
+  private regenerateCount = new Map<string, number>();
+  /**
+   * Requirements and manifest description stored during generateTests() so
+   * repairSingleTest() can regenerate a test file from scratch if stuck.
+   */
+  private lastGenerateRequirements: string[] = [];
+  private lastGenerateManifestDescription: string | undefined = undefined;
   /** Per-file summaries produced after each file completes during Execute.
    * Injected into subsequent files' first Developer step as cross-file context. */
   private fileContextSummaries: Record<string, string> = {};
@@ -2774,6 +2792,10 @@ export default function ${compName}() {
     targetFile?: string,
     manifestDescription?: string,
   ) {
+    // Store so repairSingleTest can regenerate from scratch if stuck
+    this.lastGenerateRequirements = requirements;
+    this.lastGenerateManifestDescription = manifestDescription;
+
     const file = targetFile || this.manifest[0]?.path || "output.txt";
     const ext = file.split(".").pop()?.toLowerCase() || "";
     const testFile = file.replace(
@@ -2911,6 +2933,10 @@ export default function ${compName}() {
    * @returns true if all tests pass (or no test file exists), false if failures remain
    */
   private async runTestQA(targetFile?: string): Promise<boolean> {
+    // Clear per-run repair state so stuck detection doesn't bleed across TDD calls
+    this.lastRepairError.clear();
+    this.regenerateCount.clear();
+
     // Determine the primary code file and its test file
     const primaryFile =
       targetFile || this.manifest.find((f) => supportsTDD(f.path))?.path;
@@ -3470,6 +3496,16 @@ output: |
   /**
    * When a single test keeps failing after component fixes,
    * the test itself might be wrong. Remove or fix it.
+   *
+   * Escalation strategy (inspired by stuck-detection in autonomous loops):
+   *   1st call  → patch mode: fix the specific assertion, keep other tests
+   *   2nd call with same error → rewrite mode: rewrite the whole failing test
+   *                              block with roles tree prominently featured
+   *   3rd call (still stuck)  → regenerate: discard test file, call
+   *                              generateTests() from scratch (capped at 1)
+   *
+   * "If the same evidence appears twice in a row, you have nothing new to act
+   *  on — escalate, don't repeat." (autonomous loop check pattern)
    */
   private async repairSingleTest(
     failure: { name: string; error?: string },
@@ -3490,9 +3526,55 @@ output: |
     const outDir = this.outputDir();
     const testPath = path.join(outDir, testFileName);
 
+    // ── Stuck detection ──────────────────────────────────────────────────────
+    // Hash the first 300 chars of the error (enough to distinguish different
+    // failures, short enough to avoid false mismatches from pointer addresses).
+    const errorFingerprint = (failure.error || "").slice(0, 300);
+    const lastError = this.lastRepairError.get(failure.name);
+    const isStuck = lastError !== undefined && lastError === errorFingerprint;
+    this.lastRepairError.set(failure.name, errorFingerprint);
+
+    // ── Regenerate path (3rd attempt, same error) ────────────────────────────
+    if (isStuck) {
+      const regenCount = this.regenerateCount.get(failure.name) ?? 0;
+      if (regenCount >= 1) {
+        await this.log(
+          "TDD",
+          `Test "${failure.name}" stuck after rewrite — dropping test`,
+        );
+        return false;
+      }
+      this.regenerateCount.set(failure.name, regenCount + 1);
+      await this.log(
+        "TDD",
+        `Test "${failure.name}" still failing with same error — regenerating test file from scratch`,
+      );
+      await this.generateTests(
+        this.lastGenerateRequirements,
+        primaryFile,
+        this.lastGenerateManifestDescription,
+      );
+      const regenResult = runTests(this.projectId, testFileName);
+      if (!regenResult.crashed && regenResult.failed === 0) {
+        await this.log("TDD", "Regenerated test file passes");
+        // Update repair tracking so the next call doesn't think we're still stuck
+        this.lastRepairError.delete(failure.name);
+        return true;
+      }
+      await this.log(
+        "TDD",
+        `Regenerated tests: ${regenResult.passed} passed, ${regenResult.failed} failed`,
+      );
+      return regenResult.failed === 0;
+    }
+
+    // ── Mode selection ───────────────────────────────────────────────────────
+    // rewriteMode = we've been here before (lastError was set but different, or
+    // this is a second repair attempt). Determined by whether lastError existed.
+    const rewriteMode = lastError !== undefined;
     await this.log(
       "TDD",
-      `Test "${failure.name}" may be wrong — attempting repair`,
+      `Test "${failure.name}" may be wrong — attempting ${rewriteMode ? "full rewrite" : "patch"} repair`,
     );
 
     // Extract UI hints from the component so the model can fix wrong queries
@@ -3560,19 +3642,57 @@ output: |
       }
     }
 
-    const REPAIR_PROMPT = `One test in this file always fails, even after multiple attempts to fix the code.
+    // ── Prompt assembly ──────────────────────────────────────────────────────
+    // Extract roles tree first so we know prompt weight before choosing limits.
+    const rolesTree = extractRolesTree(failure.error || "");
+
+    // Prompt size guard: small models (~4k context) degrade when the prompt is
+    // bloated. Estimate token count as chars/4. If the combined context would
+    // exceed ~2000 tokens (8000 chars) for component + test alone, tighten
+    // the truncation limits so the actual failure gets more of the budget.
+    // Roles tree + error slice always included at full size.
+    const rolesTreeLen = rolesTree ? rolesTree.length : 0;
+    const errorLen = Math.min((failure.error || "").length, 2000);
+    const contextBudgetChars = 8000 - rolesTreeLen - errorLen;
+    const componentMaxLines = contextBudgetChars > 4000 ? 40 : 20;
+    const testMaxLines = contextBudgetChars > 4000 ? 60 : 20;
+    if (componentMaxLines < 40 || testMaxLines < 60) {
+      await this.log(
+        "TDD",
+        `Prompt size guard active — trimming component to ${componentMaxLines} lines, test to ${testMaxLines} lines`,
+      );
+    }
+
+    const REPAIR_PROMPT = rewriteMode
+      ? `A test in this file has failed multiple times and could not be fixed by changing the component code.
+Rewrite the ENTIRE failing test block so it tests the actual rendered output.
+- Use only accessible roles and names you can see in the "Actual accessible roles" section.
+- If there is no accessible name for a button, use getByRole('button') without a name option.
+- Do NOT use getByText() for text that mixes static labels with dynamic values — use regex or getByRole.
+- If the test is impossible to write correctly, remove it entirely.
+- Keep all other passing tests unchanged.
+- Output ONLY code. No explanations.
+
+Reply:
+>>RESULT
+status: DONE
+filePath: ${testFileName}
+output: |
+  (rewritten test file)
+>>END`
+      : `One test in this file always fails, even after multiple attempts to fix the code.
 The test assertions are probably wrong — they reference UI elements that don't exist as written.
 Fix the test so it correctly tests the actual behavior of the component.
 If the test is testing something impossible, remove it.
 - Output ONLY code. No explanations.
 - Keep all other tests unchanged.${
-      isSplitTextError
-        ? `
+          isSplitTextError
+            ? `
 - CRITICAL: The error says text is "broken up by multiple elements" — but this message appears for ANY text-not-found error. The real issue is that the searched text does not exactly match what the component renders. Check the component code for the actual rendered text.${textMismatchHint}
 - If text like "Streak: X days" is spread across child elements, use a regex: getByText(/Streak: \\d+ days/i) or check by role instead.
 - Do NOT use getByText() for any text that mixes a static label with a dynamic value unless you use a flexible regex.`
-        : ""
-    }
+            : ""
+        }
 
 Reply:
 >>RESULT
@@ -3588,7 +3708,6 @@ output: |
     // Extract the vitest accessible-roles tree if present — this is the actual DOM
     // structure that testing-library sees, produced automatically when getByRole/
     // getByText/etc. fails. It tells the model exactly what roles and names exist.
-    const rolesTree = extractRolesTree(failure.error || "");
     if (rolesTree) {
       userMessage += `Actual accessible roles when component renders:\n${rolesTree}\n\n`;
       userMessage += `Use only roles and names that appear in the tree above. Do NOT query for names that are not listed.\n\n`;
@@ -3597,8 +3716,8 @@ output: |
     if (componentHints.length > 0) {
       userMessage += `Additional UI hints extracted from component source:\n${componentHints.map((h) => `  - ${h}`).join("\n")}\n\n`;
     }
-    userMessage += `Component code (key exports):\n${this.truncateForPrompt(componentCode, 40)}\n\n`;
-    userMessage += `Current test file:\n${this.truncateForPrompt(testCode, 60)}\n\n`;
+    userMessage += `Component code (key exports):\n${this.truncateForPrompt(componentCode, componentMaxLines)}\n\n`;
+    userMessage += `Current test file:\n${this.truncateForPrompt(testCode, testMaxLines)}\n\n`;
     userMessage += `Fix or remove the failing test. Keep all passing tests.`;
 
     const result = await callOllamaFn(
@@ -3634,7 +3753,7 @@ output: |
       return false;
     }
 
-    await this.log("TDD", "Test repaired successfully");
+    await this.log("TDD", `Test repair ${rewriteMode ? "(rewrite)" : "(patch)"} succeeded`);
     return true;
   }
 
