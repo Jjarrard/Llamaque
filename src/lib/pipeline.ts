@@ -2828,6 +2828,45 @@ export default function ${compName}() {
         ? analyzeComponent(fileContent)
         : undefined;
 
+    // For container components (e.g. App.tsx) that import leaf components, the
+    // interactive elements (buttons, inputs) live in the children, not in the
+    // container source. Scan local imports and merge child analyses so the test
+    // writer knows what accessible names will actually appear in the DOM.
+    if (componentAnalysis && fileContent) {
+      const localImportRe =
+        /import\s+\w+\s+from\s+["']\.\/([^"'./][^"']*?)["']/g;
+      let importMatch;
+      while ((importMatch = localImportRe.exec(fileContent)) !== null) {
+        const importedName = importMatch[1];
+        for (const ext of [".tsx", ".jsx", ".ts", ".js"]) {
+          const childPath = path.join(outDir, importedName + ext);
+          if (fs.existsSync(childPath)) {
+            const childContent = fs.readFileSync(childPath, "utf-8");
+            const childAnalysis = analyzeComponent(childContent);
+            for (const btn of childAnalysis.buttonTexts) {
+              if (!componentAnalysis.buttonTexts.includes(btn)) {
+                componentAnalysis.buttonTexts.push(btn);
+              }
+            }
+            for (const ph of childAnalysis.inputPlaceholders) {
+              if (!componentAnalysis.inputPlaceholders.includes(ph)) {
+                componentAnalysis.inputPlaceholders.push(ph);
+              }
+            }
+            for (const al of childAnalysis.ariaLabels) {
+              if (!componentAnalysis.ariaLabels.includes(al)) {
+                componentAnalysis.ariaLabels.push(al);
+              }
+            }
+            if (childAnalysis.hasInput) {
+              componentAnalysis.hasInput = true;
+            }
+            break;
+          }
+        }
+      }
+    }
+
     if (componentAnalysis) {
       await this.log(
         "TDD",
