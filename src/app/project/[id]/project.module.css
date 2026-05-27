@@ -1992,3 +1992,253 @@
     opacity: 0;
   }
 }
+
+/* ── Timeline tab ── */
+.logPanelTabs {
+  display: flex;
+  gap: 0;
+}
+
+.logTab {
+  background: transparent;
+  border: none;
+  border-bottom: 2px solid transparent;
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  font-weight: 500;
+  padding: 0.15rem 0.6rem 0.25rem;
+  cursor: pointer;
+  transition:
+    color 0.15s,
+    border-color 0.15s;
+}
+
+.logTab:hover {
+  color: var(--text);
+}
+
+.logTabActive {
+  color: var(--accent);
+  border-bottom-color: var(--accent);
+}
+
+/* ── Timeline container ── */
+.tlContainer {
+  flex: 1;
+  overflow-y: auto;
+  padding: 0.6rem 0.75rem;
+  display: flex;
+  flex-direction: column;
+  gap: 0.75rem;
+  font-size: 0.8rem;
+}
+
+.tlEmpty {
+  color: var(--text-muted);
+  font-size: 0.85rem;
+  text-align: center;
+  padding: 2rem 0;
+}
+
+/* stats row */
+.tlStats {
+  display: flex;
+  gap: 1rem;
+  flex-wrap: wrap;
+  padding: 0.5rem 0.75rem;
+  background: var(--surface-raised, rgba(255, 255, 255, 0.04));
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+
+.tlStat {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  min-width: 3.5rem;
+}
+
+.tlStatVal {
+  font-size: 1.1rem;
+  font-weight: 700;
+  font-variant-numeric: tabular-nums;
+  color: var(--text);
+}
+
+.tlStatLabel {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  margin-top: 0.1rem;
+  text-transform: uppercase;
+  letter-spacing: 0.03em;
+}
+
+.tlStatWarn {
+  color: var(--warning, #f59e0b);
+}
+.tlStatDanger {
+  color: var(--danger, #ef4444);
+}
+.tlStatSuccess {
+  color: var(--success, #22c55e);
+}
+
+/* stage timing bars */
+.tlBars {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.4rem 0;
+}
+
+.tlBar {
+  display: grid;
+  grid-template-columns: 4.5rem 1fr 3.5rem;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.tlBarLabel {
+  font-size: 0.72rem;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-align: right;
+  letter-spacing: 0.04em;
+}
+
+.tlBarTrack {
+  height: 10px;
+  background: var(--border);
+  border-radius: 2px;
+  overflow: hidden;
+}
+
+.tlBarFill {
+  height: 100%;
+  background: var(--accent);
+  border-radius: 2px;
+  transition: width 0.3s ease;
+}
+
+.tlBarFillRecovery {
+  background: var(--danger, #ef4444);
+}
+
+.tlBarTime {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+}
+
+/* stage event groups */
+.tlGroups {
+  display: flex;
+  flex-direction: column;
+  gap: 0.4rem;
+}
+
+.tlGroup {
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  overflow: hidden;
+}
+
+.tlGroupHeader {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+  padding: 0.35rem 0.6rem;
+  background: var(--surface-raised, rgba(255, 255, 255, 0.03));
+  cursor: pointer;
+  list-style: none;
+  user-select: none;
+}
+
+.tlGroupHeader::-webkit-details-marker {
+  display: none;
+}
+
+.tlGroupHeader::before {
+  content: "▸";
+  font-size: 0.65rem;
+  color: var(--text-muted);
+  flex-shrink: 0;
+  transition: transform 0.15s;
+}
+
+.tlGroup[open] > .tlGroupHeader::before {
+  transform: rotate(90deg);
+}
+
+.tlGroupStage {
+  font-size: 0.75rem;
+  font-weight: 700;
+  letter-spacing: 0.05em;
+}
+
+.tlGroupDuration {
+  font-size: 0.72rem;
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  margin-left: auto;
+}
+
+.tlGroupCount {
+  font-size: 0.68rem;
+  color: var(--text-muted);
+  opacity: 0.7;
+}
+
+/* individual events */
+.tlEvents {
+  padding: 0.25rem 0;
+  border-top: 1px solid var(--border);
+}
+
+.tlEvent {
+  display: grid;
+  grid-template-columns: 3.2rem auto 1fr;
+  align-items: baseline;
+  gap: 0.35rem;
+  padding: 0.18rem 0.6rem;
+  font-size: 0.75rem;
+  line-height: 1.4;
+}
+
+.tlEvent:hover {
+  background: rgba(255, 255, 255, 0.03);
+}
+
+.tlEventFail {
+  background: rgba(239, 68, 68, 0.07);
+}
+
+.tlEventSuccess {
+  background: rgba(34, 197, 94, 0.07);
+}
+
+.tlEventRecover {
+  border-left: 2px solid var(--danger, #ef4444);
+}
+
+.tlEventDelta {
+  color: var(--text-muted);
+  font-variant-numeric: tabular-nums;
+  font-size: 0.68rem;
+  text-align: right;
+  opacity: 0.7;
+}
+
+.tlEventAgent {
+  font-size: 0.7rem;
+  font-weight: 600;
+  letter-spacing: 0.04em;
+  flex-shrink: 0;
+}
+
+.tlEventMsg {
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}

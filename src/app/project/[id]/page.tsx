@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback } from "react";
+import { useEffect, useState, useRef, useCallback, useMemo } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./project.module.css";
@@ -309,7 +309,81 @@ export default function ProjectPage() {
   const [runStartTime, setRunStartTime] = useState<Date | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
   const [streamOutput, setStreamOutput] = useState<string>("");
+  const [showTimeline, setShowTimeline] = useState(false);
   const streamOutputRef = useRef<HTMLPreElement>(null);
+
+  // ── Timeline / benchmark computation ─────────────────────────────────────
+  type TLEvent = LogEntry & { offsetMs: number };
+  type TLStage = {
+    stage: string;
+    startMs: number;
+    endMs: number;
+    durationMs: number;
+    events: TLEvent[];
+  };
+  type TimelineData = {
+    groups: TLStage[];
+    totalMs: number;
+    startMs: number;
+    retryCount: number;
+    recoveryCount: number;
+    recoverySuccessCount: number;
+    stuckCount: number;
+  };
+
+  const timelineData = useMemo((): TimelineData | null => {
+    if (!logEntries.length) return null;
+    const sorted = [...logEntries].sort(
+      (a, b) =>
+        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
+    );
+    const startMs = new Date(sorted[0].createdAt).getTime();
+    const endMs = new Date(sorted[sorted.length - 1].createdAt).getTime();
+    const groups: TLStage[] = [];
+    let cur: { stage: string; startMs: number; events: TLEvent[] } | null =
+      null;
+    for (const entry of sorted) {
+      const ms = new Date(entry.createdAt).getTime();
+      if (entry.agent === "STAGE") {
+        if (cur)
+          groups.push({ ...cur, endMs: ms, durationMs: ms - cur.startMs });
+        cur = { stage: entry.message, startMs: ms, events: [] };
+      } else {
+        if (!cur) cur = { stage: "init", startMs, events: [] };
+        cur.events.push({ ...entry, offsetMs: ms - cur.startMs });
+      }
+    }
+    if (cur) {
+      groups.push({ ...cur, endMs: endMs, durationMs: endMs - cur.startMs });
+    }
+    let retryCount = 0,
+      recoveryCount = 0,
+      recoverySuccessCount = 0,
+      stuckCount = 0;
+    for (const e of sorted) {
+      if (e.agent === "QA" && /attempt \d+ FAIL/i.test(e.message)) retryCount++;
+      if (e.agent === "RECOVER" && /Layer 1:/i.test(e.message)) recoveryCount++;
+      if (e.agent === "RECOVER" && /SUCCESS/i.test(e.message))
+        recoverySuccessCount++;
+      if (e.agent === "QA" && /short-circuiting/i.test(e.message)) stuckCount++;
+    }
+    return {
+      groups,
+      totalMs: endMs - startMs,
+      startMs,
+      retryCount,
+      recoveryCount,
+      recoverySuccessCount,
+      stuckCount,
+    };
+  }, [logEntries]);
+
+  const fmtMs = (ms: number) => {
+    if (ms < 1000) return `${ms}ms`;
+    const s = Math.round(ms / 1000);
+    if (s < 60) return `${s}s`;
+    return `${Math.floor(s / 60)}m ${s % 60}s`;
+  };
 
   const toggleAccordion = (taskId: number) => {
     setOpenAccordions((prev) => {
@@ -1845,9 +1919,23 @@ export default function ProjectPage() {
         <div className={styles.logPanel}>
           <div className={styles.logPanelHeader}>
             <div className={styles.logPanelTitleRow}>
-              <h2 className={styles.logPanelTitle}>Live Log</h2>
+              <div className={styles.logPanelTabs}>
+                <button
+                  className={`${styles.logTab} ${!showTimeline ? styles.logTabActive : ""}`}
+                  onClick={() => setShowTimeline(false)}
+                >
+                  Log
+                </button>
+                <button
+                  className={`${styles.logTab} ${showTimeline ? styles.logTabActive : ""}`}
+                  onClick={() => setShowTimeline(true)}
+                  title="Timing benchmark &amp; event timeline"
+                >
+                  Timeline
+                </button>
+              </div>
               <span className={styles.logCount}>
-                {filteredLogs.length > 0
+                {!showTimeline && filteredLogs.length > 0
                   ? `${filteredLogs.length} entries`
                   : ""}
                 {effectiveRunning && (
@@ -1855,7 +1943,7 @@ export default function ProjectPage() {
                 )}
               </span>
             </div>
-            {logAgents.length > 1 && (
+            {!showTimeline && logAgents.length > 1 && (
               <div className={styles.logFilters}>
                 <button
                   className={`${styles.logFilterBtn} ${!logFilter ? styles.logFilterActive : ""}`}
@@ -1877,64 +1965,217 @@ export default function ProjectPage() {
               </div>
             )}
           </div>
-          <div
-            className={styles.logList}
-            ref={logListRef}
-            onScroll={handleLogScroll}
-          >
-            {filteredLogs.map((entry) => (
-              <div key={entry.id} className={styles.logEntry}>
-                <div
-                  className={`${styles.logRow} ${entry.hasRaw ? styles.logClickable : ""}`}
-                  onClick={() => entry.hasRaw && toggleLogDetail(entry.id)}
-                >
-                  <span className={styles.logTimestamp}>
-                    {new Date(entry.createdAt).toLocaleTimeString([], {
-                      hour: "2-digit",
-                      minute: "2-digit",
-                      second: "2-digit",
-                    })}
-                  </span>
-                  <span
-                    className={`${styles.logAgent} ${agentClass[entry.agent] || ""}`}
-                  >
-                    [{entry.agent}]
-                  </span>
-                  <span className={styles.logMessage}>{entry.message}</span>
-                  {entry.hasRaw && (
-                    <span className={styles.logExpandIcon}>
-                      {expandedLogs[entry.id] !== undefined ? "▾" : "▸"}
-                    </span>
+
+          {showTimeline ? (
+            <div className={styles.tlContainer}>
+              {!timelineData ? (
+                <p className={styles.tlEmpty}>No log data yet.</p>
+              ) : (
+                <>
+                  {/* ── Stats bar ── */}
+                  <div className={styles.tlStats}>
+                    <div className={styles.tlStat}>
+                      <span className={styles.tlStatVal}>
+                        {fmtMs(timelineData.totalMs)}
+                      </span>
+                      <span className={styles.tlStatLabel}>total</span>
+                    </div>
+                    <div className={styles.tlStat}>
+                      <span
+                        className={`${styles.tlStatVal} ${timelineData.retryCount > 0 ? styles.tlStatWarn : ""}`}
+                      >
+                        {timelineData.retryCount}
+                      </span>
+                      <span className={styles.tlStatLabel}>QA retries</span>
+                    </div>
+                    <div className={styles.tlStat}>
+                      <span
+                        className={`${styles.tlStatVal} ${timelineData.recoveryCount > 0 ? styles.tlStatDanger : ""}`}
+                      >
+                        {timelineData.recoveryCount}
+                      </span>
+                      <span className={styles.tlStatLabel}>recoveries</span>
+                    </div>
+                    <div className={styles.tlStat}>
+                      <span
+                        className={`${styles.tlStatVal} ${timelineData.recoverySuccessCount > 0 ? styles.tlStatSuccess : ""}`}
+                      >
+                        {timelineData.recoverySuccessCount}
+                      </span>
+                      <span className={styles.tlStatLabel}>rescued</span>
+                    </div>
+                    <div className={styles.tlStat}>
+                      <span
+                        className={`${styles.tlStatVal} ${timelineData.stuckCount > 0 ? styles.tlStatDanger : ""}`}
+                      >
+                        {timelineData.stuckCount}
+                      </span>
+                      <span className={styles.tlStatLabel}>short-circuits</span>
+                    </div>
+                  </div>
+
+                  {/* ── Stage timing bars ── */}
+                  {timelineData.totalMs > 0 && (
+                    <div className={styles.tlBars}>
+                      {timelineData.groups
+                        .filter((g) => g.stage !== "init" && g.durationMs > 500)
+                        .sort((a, b) => b.durationMs - a.durationMs)
+                        .map((g) => {
+                          const pct = Math.max(
+                            2,
+                            Math.round(
+                              (g.durationMs / timelineData.totalMs) * 100,
+                            ),
+                          );
+                          const isRecovery =
+                            g.stage === "recover" || g.stage === "RECOVER";
+                          return (
+                            <div
+                              key={`${g.stage}-${g.startMs}`}
+                              className={styles.tlBar}
+                            >
+                              <span className={styles.tlBarLabel}>
+                                {g.stage.toUpperCase()}
+                              </span>
+                              <div className={styles.tlBarTrack}>
+                                <div
+                                  className={`${styles.tlBarFill} ${isRecovery ? styles.tlBarFillRecovery : ""}`}
+                                  style={{ width: `${pct}%` }}
+                                />
+                              </div>
+                              <span className={styles.tlBarTime}>
+                                {fmtMs(g.durationMs)}
+                              </span>
+                            </div>
+                          );
+                        })}
+                    </div>
                   )}
-                </div>
-                {expandedLogs[entry.id] !== undefined && (
-                  <div className={styles.logDetailBox}>
-                    {expandedLogs[entry.id] === null ? (
-                      <p className={styles.logDetailLoading}>Loading…</p>
-                    ) : (
-                      <>
-                        <div className={styles.logDetailSection}>
-                          <span className={styles.logDetailLabel}>Prompt</span>
-                          <pre className={styles.logDetailPre}>
-                            {expandedLogs[entry.id]!.rawPrompt || "(none)"}
-                          </pre>
-                        </div>
-                        <div className={styles.logDetailSection}>
-                          <span className={styles.logDetailLabel}>
-                            Response
+
+                  {/* ── Event groups ── */}
+                  <div className={styles.tlGroups}>
+                    {timelineData.groups.map((g) => (
+                      <details
+                        key={`${g.stage}-${g.startMs}`}
+                        className={styles.tlGroup}
+                        open={g.events.some(
+                          (e) =>
+                            e.agent === "RECOVER" ||
+                            /FAIL|stuck|short-circuit/i.test(e.message),
+                        )}
+                      >
+                        <summary className={styles.tlGroupHeader}>
+                          <span
+                            className={`${styles.tlGroupStage} ${agentClass[g.stage.toUpperCase()] || ""}`}
+                          >
+                            {g.stage.toUpperCase()}
                           </span>
-                          <pre className={styles.logDetailPre}>
-                            {expandedLogs[entry.id]!.rawResponse || "(none)"}
-                          </pre>
+                          <span className={styles.tlGroupDuration}>
+                            {fmtMs(g.durationMs)}
+                          </span>
+                          <span className={styles.tlGroupCount}>
+                            {g.events.length} events
+                          </span>
+                        </summary>
+                        <div className={styles.tlEvents}>
+                          {g.events.map((e) => {
+                            const isFail =
+                              /FAIL|failed|stuck|short-circuit/i.test(
+                                e.message,
+                              );
+                            const isSuccess =
+                              /SUCCESS|success|approved|passed|clean/i.test(
+                                e.message,
+                              );
+                            const isRecover = e.agent === "RECOVER";
+                            return (
+                              <div
+                                key={e.id}
+                                className={`${styles.tlEvent} ${isFail ? styles.tlEventFail : ""} ${isSuccess ? styles.tlEventSuccess : ""} ${isRecover ? styles.tlEventRecover : ""}`}
+                              >
+                                <span className={styles.tlEventDelta}>
+                                  +{fmtMs(e.offsetMs)}
+                                </span>
+                                <span
+                                  className={`${styles.tlEventAgent} ${agentClass[e.agent] || ""}`}
+                                >
+                                  [{e.agent}]
+                                </span>
+                                <span className={styles.tlEventMsg}>
+                                  {e.message}
+                                </span>
+                              </div>
+                            );
+                          })}
                         </div>
-                      </>
+                      </details>
+                    ))}
+                  </div>
+                </>
+              )}
+            </div>
+          ) : (
+            <div
+              className={styles.logList}
+              ref={logListRef}
+              onScroll={handleLogScroll}
+            >
+              {filteredLogs.map((entry) => (
+                <div key={entry.id} className={styles.logEntry}>
+                  <div
+                    className={`${styles.logRow} ${entry.hasRaw ? styles.logClickable : ""}`}
+                    onClick={() => entry.hasRaw && toggleLogDetail(entry.id)}
+                  >
+                    <span className={styles.logTimestamp}>
+                      {new Date(entry.createdAt).toLocaleTimeString([], {
+                        hour: "2-digit",
+                        minute: "2-digit",
+                        second: "2-digit",
+                      })}
+                    </span>
+                    <span
+                      className={`${styles.logAgent} ${agentClass[entry.agent] || ""}`}
+                    >
+                      [{entry.agent}]
+                    </span>
+                    <span className={styles.logMessage}>{entry.message}</span>
+                    {entry.hasRaw && (
+                      <span className={styles.logExpandIcon}>
+                        {expandedLogs[entry.id] !== undefined ? "▾" : "▸"}
+                      </span>
                     )}
                   </div>
-                )}
-              </div>
-            ))}
-            <div ref={logEndRef} />
-          </div>
+                  {expandedLogs[entry.id] !== undefined && (
+                    <div className={styles.logDetailBox}>
+                      {expandedLogs[entry.id] === null ? (
+                        <p className={styles.logDetailLoading}>Loading…</p>
+                      ) : (
+                        <>
+                          <div className={styles.logDetailSection}>
+                            <span className={styles.logDetailLabel}>
+                              Prompt
+                            </span>
+                            <pre className={styles.logDetailPre}>
+                              {expandedLogs[entry.id]!.rawPrompt || "(none)"}
+                            </pre>
+                          </div>
+                          <div className={styles.logDetailSection}>
+                            <span className={styles.logDetailLabel}>
+                              Response
+                            </span>
+                            <pre className={styles.logDetailPre}>
+                              {expandedLogs[entry.id]!.rawResponse || "(none)"}
+                            </pre>
+                          </div>
+                        </>
+                      )}
+                    </div>
+                  )}
+                </div>
+              ))}
+              <div ref={logEndRef} />
+            </div>
+          )}
         </div>
       </div>
     </div>
