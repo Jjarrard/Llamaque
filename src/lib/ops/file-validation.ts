@@ -2,7 +2,7 @@
  * Unified file-change validation pipeline.
  *
  * Both the full-rewrite (`runDeveloper`) and patch (`runDeveloperPatch`)
- * paths in pipeline.ts used to call validation primitives in slightly
+ * paths in the pipeline used to call validation primitives in slightly
  * different orders with slightly different conclusions. This module is
  * the ONE place to update when adding a new check — it returns a single
  * structured result both paths consume.
