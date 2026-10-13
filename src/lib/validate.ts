@@ -1029,7 +1029,6 @@ function detectJsScaffold(source: string): ValidationResult {
 
   while ((match = fnPattern.exec(source)) !== null) {
     totalFunctions++;
-    const fnName = match[1];
     // Extract body: find the matching closing brace
     let depth = 1;
     const bodyStart = match.index + match[0].length;

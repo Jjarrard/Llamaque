@@ -121,12 +121,6 @@ export async function GET(
         ? `<div style="position:fixed;bottom:0;right:0;background:#1e1e2e;color:#a6e3a1;font:11px monospace;padding:4px 8px;border-radius:4px 0 0 0;opacity:0.85;z-index:9998">preview: ${previewFile}</div>`
         : "";
 
-    // Escape backticks and ${} in user code so they don't break the JS template literal
-    const escapedCode = componentCode
-      .replace(/\\/g, "\\\\")
-      .replace(/`/g, "\\`")
-      .replace(/\$\{/g, "\\${");
-
     const previewHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -180,7 +174,7 @@ export async function GET(
   </script>
   <script>
     try {
-      var code = ${JSON.stringify(
+      var code = ${scriptSafeJson(
         `const { useState, useEffect, useRef, useCallback, useMemo, useReducer, useContext, createContext, Fragment } = React;\n\n` +
           componentCode +
           `\n\nclass __ErrorBoundary__ extends React.Component {\n  constructor(props) { super(props); this.state = { err: null }; }\n  static getDerivedStateFromError(e) { return { err: e }; }\n  componentDidCatch(e) {\n    if (typeof showError !== "undefined") showError((e && e.stack) || String(e));\n  }\n  render() {\n    if (this.state.err) return null;\n    return this.props.children;\n  }\n}\n\nvar __Comp__ = typeof ${componentName} !== "undefined" ? ${componentName} : function() { return React.createElement("div", null, "No component found"); };\nvar root = ReactDOM.createRoot(document.getElementById("root"));\nroot.render(React.createElement(__ErrorBoundary__, null, React.createElement(__Comp__)));`,
@@ -232,6 +226,12 @@ export async function GET(
  * Recursively reads ./Sibling.tsx/ts and prepends its stripped code before
  * the main component so <Sibling /> references resolve without a bundler.
  */
+/** JSON for embedding inside an inline <script>: escaping "<" means generated
+ *  code containing "</script>" can't end the tag early. */
+function scriptSafeJson(value: string): string {
+  return JSON.stringify(value).replace(/</g, "\\u003c");
+}
+
 function bundleLocalImports(
   content: string,
   outputDir: string,

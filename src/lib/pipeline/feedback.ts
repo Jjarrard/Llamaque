@@ -143,18 +143,19 @@ export async function runFeedbackPass(p: Pipeline, feedback: string) {
 
     await p.log("FBK", `Editing ${edit.filePath}: ${edit.instruction}`);
 
-    const surgicalOk = await trySurgicalFeedbackEdit(p, 
+    const surgicalOk = await trySurgicalFeedbackEdit(
+      p,
       edit.filePath,
       edit.instruction,
       original,
-      fullPath,
     );
 
     if (surgicalOk) {
       appliedCount++;
     } else {
       // Fall back to whole-file rewrite via the developer agent.
-      const wholeFileOk = await tryWholeFileFeedbackEdit(p, 
+      const wholeFileOk = await tryWholeFileFeedbackEdit(
+        p,
         edit.filePath,
         edit.instruction,
         feedback,
@@ -212,11 +213,11 @@ export async function runFeedbackPass(p: Pipeline, feedback: string) {
           const propInstruction = `Rename ${pair.from} to ${pair.to}`;
           const backupPath = fullPath + ".bak";
           fs.writeFileSync(backupPath, content, "utf-8");
-          const ok = await trySurgicalFeedbackEdit(p, 
+          const ok = await trySurgicalFeedbackEdit(
+            p,
             file.path,
             propInstruction,
             content,
-            fullPath,
           );
           if (ok) {
             appliedCount++;
@@ -248,7 +249,6 @@ export async function trySurgicalFeedbackEdit(
   filePath: string,
   instruction: string,
   original: string,
-  fullPath: string,
 ): Promise<boolean> {
   const candidates: LocateCandidate[] = locateWindows(original, instruction);
   if (candidates.length === 0) {

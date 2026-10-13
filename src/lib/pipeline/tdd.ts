@@ -482,7 +482,8 @@ export async function runTestQA(p: Pipeline, targetFile?: string): Promise<boole
         devResult.raw,
       );
       // If the component can't be fixed, maybe the test is bad — try fixing the test
-      const testFixed = await repairSingleTest(p, 
+      const testFixed = await repairSingleTest(
+        p,
         failure,
         currentComponent,
         currentTest,
@@ -543,7 +544,8 @@ export async function runTestQA(p: Pipeline, targetFile?: string): Promise<boole
         if (repairs < MAX_TEST_REPAIR_ATTEMPTS) {
           testRepairCount.set(failure.name, repairs + 1);
           validationFailStreak.set(failure.name, 0); // reset streak after repair
-          const testFixed = await repairSingleTest(p, 
+          const testFixed = await repairSingleTest(
+            p,
             failure,
             currentComponent,
             fs.readFileSync(testPath, "utf-8"),
@@ -577,7 +579,8 @@ export async function runTestQA(p: Pipeline, targetFile?: string): Promise<boole
         testRepairCount.set(failure.name, repairs + 1);
         // Re-read the test after the crash (it may have been modified by the failed fix)
         const freshTestCode = fs.readFileSync(testPath, "utf-8");
-        const testFixed = await repairSingleTest(p, 
+        const testFixed = await repairSingleTest(
+          p,
           failure,
           currentComponent,
           freshTestCode,
@@ -631,7 +634,8 @@ export async function runTestQA(p: Pipeline, targetFile?: string): Promise<boole
             name: string;
             error?: string;
           };
-          const testFixed = await repairSingleTest(p, 
+          const testFixed = await repairSingleTest(
+            p,
             latestFailure,
             repaired,
             fs.readFileSync(testPath, "utf-8"),
@@ -964,7 +968,8 @@ export async function repairSingleTest(
       "TDD",
       `Test "${failure.name}" still failing with same error — regenerating test file from scratch`,
     );
-    await generateTests(p, 
+    await generateTests(
+      p,
       p.lastGenerateRequirements,
       primaryFile,
       p.lastGenerateManifestDescription,

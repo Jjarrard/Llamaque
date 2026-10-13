@@ -107,8 +107,6 @@ export async function runMinimalRetry(
   requirement: string,
   projectName: string,
 ): Promise<CleanerResult> {
-  const ext = filePath.split(".").pop()?.toLowerCase() || "";
-
   // Extremely short system prompt — no rules, no format examples
   const systemPrompt = `Write code. Output only code. No explanations.
 
@@ -173,8 +171,6 @@ export async function runScaffoldTactic(
   requirement: string,
   projectName: string,
 ): Promise<CleanerResult> {
-  const ext = filePath.split(".").pop()?.toLowerCase() || "";
-
   // Phase 1: ask for skeleton only
   const skeletonSystem = `You write code skeletons. Output only code with stub implementations (comments or placeholder returns). No explanations.\n\nReply:\n>>RESULT\nstatus: DONE\nfilePath: ${filePath}\noutput: |\n  (skeleton code)\n>>END`;
 

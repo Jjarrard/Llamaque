@@ -9,8 +9,6 @@ import {
   deriveStageStates,
   PIPELINE_STAGES,
   deriveIsRunning,
-  type StageKey,
-  type StageState,
 } from "@/lib/status";
 
 type Task = {
@@ -307,9 +305,8 @@ export default function ProjectPage() {
   const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const [runStartTime, setRunStartTime] = useState<Date | null>(null);
-  const [elapsedSeconds, setElapsedSeconds] = useState(0);
-  // Wall-clock time, refreshed by the elapsed timer while running, so render
-  // can show how long the current stage has taken without reading the clock.
+  // Wall-clock time, refreshed every second while running, so render can show
+  // elapsed times without reading the clock itself.
   const [nowMs, setNowMs] = useState(0);
   const [streamOutput, setStreamOutput] = useState<string>("");
   const [showTimeline, setShowTimeline] = useState(false);
@@ -440,6 +437,8 @@ export default function ProjectPage() {
   }, [projectId]);
 
   useEffect(() => {
+    // fetchProject only sets state after awaiting the request
+    // eslint-disable-next-line react-hooks/set-state-in-effect
     fetchProject();
   }, [fetchProject]);
 
@@ -511,7 +510,6 @@ export default function ProjectPage() {
 
   // SSE for live logs + fallback HTTP polling
   useEffect(() => {
-    let sseAlive = true;
     let lastSeenLogId = 0;
     let refreshTimer: ReturnType<typeof setTimeout> | null = null;
 
@@ -540,7 +538,6 @@ export default function ProjectPage() {
     eventSourceRef.current = es;
 
     es.onmessage = (event) => {
-      sseAlive = true;
       try {
         const entry: LogEntry = JSON.parse(event.data);
         addEntries([entry]);
@@ -549,10 +546,6 @@ export default function ProjectPage() {
       } catch {
         // Ignore parse errors
       }
-    };
-
-    es.onerror = () => {
-      sseAlive = false;
     };
 
     // Fallback: poll for logs via HTTP every 3s in case SSE drops
@@ -609,27 +602,25 @@ export default function ProjectPage() {
   // and do a final fetch when running transitions to false
   const prevRunningRef = useRef(false);
 
-  // Track elapsed time while pipeline is running
+  // Tick the clock while the pipeline is running. A run started elsewhere
+  // (another tab, or found by polling) is timed from when we first saw it.
   useEffect(() => {
-    if (!effectiveRunning) {
-      setElapsedSeconds(0);
-      return;
-    }
-    const startedAt = runStartTime ?? new Date();
+    if (!effectiveRunning) return;
     const interval = setInterval(() => {
       const now = Date.now();
-      setElapsedSeconds(Math.floor((now - startedAt.getTime()) / 1000));
+      setRunStartTime((prev) => prev ?? new Date(now));
       setNowMs(now);
     }, 1000);
     return () => clearInterval(interval);
-  }, [effectiveRunning, runStartTime]);
+  }, [effectiveRunning]);
+  const elapsedSeconds =
+    effectiveRunning && runStartTime && nowMs > 0
+      ? Math.max(0, Math.floor((nowMs - runStartTime.getTime()) / 1000))
+      : 0;
 
   // Poll for live streaming token output while running
   useEffect(() => {
-    if (!effectiveRunning) {
-      setStreamOutput("");
-      return;
-    }
+    if (!effectiveRunning) return;
     let cancelled = false;
     const poll = async () => {
       if (cancelled) return;
@@ -670,6 +661,8 @@ export default function ProjectPage() {
     } else if (prevRunningRef.current) {
       // Pipeline just stopped — do a final fetch to pick up latest state
       prevRunningRef.current = false;
+      // fetchProject only sets state after awaiting the request
+      // eslint-disable-next-line react-hooks/set-state-in-effect
       fetchProject();
     }
   }, [effectiveRunning, fetchProject]);
@@ -679,7 +672,8 @@ export default function ProjectPage() {
     optimisticStartRef.current = now.getTime();
     setOptimisticRunning(true);
     setRunStartTime(now);
-    setElapsedSeconds(0);
+    setNowMs(now.getTime());
+    setStreamOutput("");
   };
 
   const handleRun = async (stage: string = "all", breakdownDepth?: number) => {
@@ -824,10 +818,11 @@ export default function ProjectPage() {
   };
 
   // Fetch all output files for the project
+  const fileManifestJson = project?.fileManifest;
   const fetchOutputFiles = useCallback(async () => {
-    if (!project?.fileManifest) return;
+    if (!fileManifestJson) return;
     try {
-      const manifest: ManifestEntry[] = JSON.parse(project.fileManifest);
+      const manifest: ManifestEntry[] = JSON.parse(fileManifestJson);
       const files: { path: string; content: string }[] = [];
       for (const f of manifest) {
         try {
@@ -843,13 +838,13 @@ export default function ProjectPage() {
         }
       }
       setOutputFiles(files);
-      if (files.length > 0 && !selectedFile) {
-        setSelectedFile(files[0].path);
+      if (files.length > 0) {
+        setSelectedFile((prev) => prev || files[0].path);
       }
     } catch {
       // Invalid manifest
     }
-  }, [project?.fileManifest, projectId, selectedFile]);
+  }, [fileManifestJson, projectId]);
 
   const handleToggleOutput = () => {
     if (!showOutput) {
@@ -867,10 +862,6 @@ export default function ProjectPage() {
     (t) => t.depth >= 2 && t.status === "done",
   );
   // Any tasks that still need processing (pending breakdown or ready for execution)
-  const hasWorkRemaining = taskList.some((t) =>
-    ["pending", "ready"].includes(t.status),
-  );
-
   const completedStages: string[] = project
     ? JSON.parse(project.completedStages || "[]")
     : [];

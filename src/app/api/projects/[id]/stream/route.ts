@@ -58,7 +58,7 @@ export async function GET(
             );
             lastLogId = log.id;
           }
-        } catch (err) {
+        } catch {
           // Ignore errors during polling
         }
 

@@ -341,7 +341,8 @@ export async function executeSpec(
   }
 
   // Phase A: Deterministic pre-pass (builds base draft)
-  await applyDeterministicOpsPrepass(p, 
+  await applyDeterministicOpsPrepass(
+    p,
     filePath,
     requirements,
     taskGroup[0].id,
@@ -1098,7 +1099,8 @@ export async function executeSpec(
 
     // If self-heal failed, try the 3-layer LLM recovery system
     if (!stepPassed && !p.aborted) {
-      const recovered = await recoverFromFailure(p, 
+      const recovered = await recoverFromFailure(
+        p,
         filePath,
         req,
         lastGarbageOutput,
@@ -1150,7 +1152,8 @@ export async function executeSpec(
   const finalContent = p.getCurrentFileContent(filePath);
   if (!finalContent || finalContent.trim().length < 30) {
     // File is still basically empty — try LLM recovery first
-    const recovered = await recoverFromFailure(p, 
+    const recovered = await recoverFromFailure(
+      p,
       filePath,
       requirements.join("; "),
       null,

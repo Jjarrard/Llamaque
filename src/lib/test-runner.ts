@@ -81,7 +81,6 @@ export function runTests(
   const cmd = `"${vitestBin}" run --config "${configFile}" --reporter=json "${testFile}" 2>&1`;
 
   let rawOutput: string;
-  let exitCode: number;
 
   try {
     rawOutput = execSync(cmd, {
@@ -93,7 +92,6 @@ export function runTests(
         NODE_ENV: "test",
       },
     });
-    exitCode = 0;
   } catch (err: unknown) {
     const execErr = err as {
       status?: number;
@@ -101,7 +99,6 @@ export function runTests(
       stderr?: string;
       output?: string[];
     };
-    exitCode = execErr.status ?? 1;
     rawOutput =
       execErr.stdout ||
       execErr.stderr ||

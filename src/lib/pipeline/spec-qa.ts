@@ -62,7 +62,8 @@ export async function qaSpec(
 
     if (isInstructionDumpFailure) {
       // Try LLM-based recovery (cleaner → minimal retry → alt model)
-      const recovered = await recoverFromFailure(p, 
+      const recovered = await recoverFromFailure(
+        p,
         filePath,
         requirements.join("; "),
         finalOutput,
@@ -146,7 +147,8 @@ export async function qaSpec(
     } else {
       // Final fallback chain: recovery → deterministic → stuck
       // Try LLM recovery first
-      const recovered = await recoverFromFailure(p, 
+      const recovered = await recoverFromFailure(
+        p,
         filePath,
         requirements.join("; "),
         finalOutput,
