@@ -308,6 +308,9 @@ export default function ProjectPage() {
   const eventSourceRef = useRef<EventSource | null>(null);
   const [runStartTime, setRunStartTime] = useState<Date | null>(null);
   const [elapsedSeconds, setElapsedSeconds] = useState(0);
+  // Wall-clock time, refreshed by the elapsed timer while running, so render
+  // can show how long the current stage has taken without reading the clock.
+  const [nowMs, setNowMs] = useState(0);
   const [streamOutput, setStreamOutput] = useState<string>("");
   const [showTimeline, setShowTimeline] = useState(false);
   const streamOutputRef = useRef<HTMLPreElement>(null);
@@ -614,7 +617,9 @@ export default function ProjectPage() {
     }
     const startedAt = runStartTime ?? new Date();
     const interval = setInterval(() => {
-      setElapsedSeconds(Math.floor((Date.now() - startedAt.getTime()) / 1000));
+      const now = Date.now();
+      setElapsedSeconds(Math.floor((now - startedAt.getTime()) / 1000));
+      setNowMs(now);
     }, 1000);
     return () => clearInterval(interval);
   }, [effectiveRunning, runStartTime]);
@@ -669,6 +674,14 @@ export default function ProjectPage() {
     }
   }, [effectiveRunning, fetchProject]);
 
+  const markRunStarted = () => {
+    const now = new Date();
+    optimisticStartRef.current = now.getTime();
+    setOptimisticRunning(true);
+    setRunStartTime(now);
+    setElapsedSeconds(0);
+  };
+
   const handleRun = async (stage: string = "all", breakdownDepth?: number) => {
     setError(null);
     const body: Record<string, unknown> = { stage };
@@ -679,10 +692,7 @@ export default function ProjectPage() {
       body: JSON.stringify(body),
     });
     if (res.ok) {
-      optimisticStartRef.current = Date.now();
-      setOptimisticRunning(true);
-      setRunStartTime(new Date());
-      setElapsedSeconds(0);
+      markRunStarted();
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start pipeline");
@@ -786,10 +796,7 @@ export default function ProjectPage() {
       body: JSON.stringify({ stage: "qa" }),
     });
     if (res.ok) {
-      optimisticStartRef.current = Date.now();
-      setOptimisticRunning(true);
-      setRunStartTime(new Date());
-      setElapsedSeconds(0);
+      markRunStarted();
     } else {
       const data = await res.json();
       setError(data.error || "Failed to start QA pass");
@@ -808,10 +815,7 @@ export default function ProjectPage() {
       }),
     });
     if (res.ok) {
-      optimisticStartRef.current = Date.now();
-      setOptimisticRunning(true);
-      setRunStartTime(new Date());
-      setElapsedSeconds(0);
+      markRunStarted();
       setFeedbackText("");
     } else {
       const data = await res.json();
@@ -1468,8 +1472,8 @@ export default function ProjectPage() {
           {activeStage && (
             <span className={styles.activityStage}>
               {activeStage.toUpperCase()}
-              {project?.stageStartedAt
-                ? ` · ${formatElapsed(Math.floor((Date.now() - project.stageStartedAt) / 1000))}`
+              {project?.stageStartedAt && nowMs > 0
+                ? ` · ${formatElapsed(Math.max(0, Math.floor((nowMs - project.stageStartedAt) / 1000)))}`
                 : ""}
               {project && project.activityCounter > 0
                 ? ` · ${project.activityCounter} updates`

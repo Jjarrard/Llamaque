@@ -44,8 +44,8 @@ export async function qaSpec(
     );
   }
 
-  let finalOutput = repaired;
-  let result = validateOutput(finalOutput, filePath);
+  const finalOutput = repaired;
+  const result = validateOutput(finalOutput, filePath);
 
   if (result.valid) {
     await p.log("QA", `PASS: ${filePath}`, taskGroup[0].id);

@@ -68,13 +68,21 @@ function numThreadsForProfile(profile: ThreadProfile): number {
 
 /**
  * CPU thread cap — limits heat and keeps the laptop usable.
- * Set OLLAMA_NUM_THREAD in .env.local to override (0 = let Ollama decide).
- * Default: half the logical CPUs.
+ * Precedence: the project's CPU Threads setting (low/med/high) during a
+ * pipeline run, then OLLAMA_NUM_THREAD from .env.local, then half the
+ * logical CPUs.
  */
 const NUM_THREAD = (() => {
   const v = parseInt(process.env.OLLAMA_NUM_THREAD ?? "", 10);
-  return Number.isFinite(v) && v > 0 ? v : undefined; // undefined = Ollama default
+  return Number.isFinite(v) && v > 0 ? v : undefined;
 })();
+
+function resolveNumThread(): number {
+  const profile = streamingStorage.getStore()?.threadProfile;
+  return profile
+    ? numThreadsForProfile(profile)
+    : (NUM_THREAD ?? numThreadsForProfile("med"));
+}
 
 interface OllamaMessage {
   role: "system" | "user" | "assistant";
@@ -128,9 +136,7 @@ export async function callOllama(
   const streamCtx = streamingStorage.getStore();
   const useStream = streamCtx !== undefined;
   const activity = streamCtx?.onActivity;
-  const numThread = streamCtx?.threadProfile
-    ? numThreadsForProfile(streamCtx.threadProfile)
-    : (NUM_THREAD ?? numThreadsForProfile("med"));
+  const numThread = resolveNumThread();
 
   activity?.(`[${role}] sending prompt to ${model}...`);
 
@@ -147,7 +153,7 @@ export async function callOllama(
       temperature: config.temperature,
       num_predict: numPredict,
       num_ctx: NUM_CTX,
-      ...(numThread !== undefined ? { num_thread: numThread } : {}),
+      num_thread: numThread,
     },
     stop: [">>END"],
   };
@@ -328,7 +334,7 @@ export async function callOllamaVision(
       temperature: config.temperature,
       num_predict: numPredict,
       num_ctx: NUM_CTX,
-      ...(NUM_THREAD !== undefined ? { num_thread: NUM_THREAD } : {}),
+      num_thread: resolveNumThread(),
     },
     stop: [">>END"],
   };

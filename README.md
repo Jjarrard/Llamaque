@@ -4,7 +4,7 @@
 
 An experiment in how far small local models can get building a small app when
 the harness does most of the work. Describe a project in a sentence, and a
-chain of narrow LLM agents plans it, writes the code, writes tests and runs QA,
+chain of narrow LLM agents plans it, writes tests, writes the code and runs QA,
 all locally via Ollama.
 
 Generated projects are typically a small single-page React + TypeScript app.
@@ -62,7 +62,7 @@ Optional, in `.env.local`:
 | variable                  | does                                                                                   |
 | ------------------------- | -------------------------------------------------------------------------------------- |
 | `OLLAMA_BASE_URL`         | Ollama server (default `http://localhost:11434`)                                       |
-| `OLLAMA_NUM_THREAD`       | cap CPU threads to keep the machine cooler (default: Ollama decides)                   |
+| `OLLAMA_NUM_THREAD`       | CPU threads for runs without a project CPU setting (default: half your cores)          |
 | `LLAMAQUE_FALLBACK_MODEL` | a bigger model to try as a last resort when a file keeps failing, e.g. `qwen2.5-coder:32b` |
 
 ## Tech Stack
