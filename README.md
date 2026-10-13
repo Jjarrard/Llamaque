@@ -17,6 +17,8 @@ that doesn't run.
 
 Generated projects are typically a small single-page React + TypeScript app.
 
+![A finished Llamaque project: stage tracker, generated files, task tree and pipeline log](docs/screenshot.png)
+
 ## Prerequisites
 
 - [Node.js](https://nodejs.org) 20.9+ (required by Next.js 16)
