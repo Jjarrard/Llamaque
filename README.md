@@ -7,14 +7,6 @@ the harness does most of the work. Describe a project in a sentence, and a
 chain of narrow LLM agents plans it, writes the code, writes tests and runs QA,
 all locally via Ollama.
 
-It doesn't always work. Most of the code here isn't prompting, it's checking:
-the TypeScript compiler, vitest, a headless browser render, and detectors for
-truncated files, duplicate symbols and undefined identifiers. When a check
-fails, the failure goes back to a model with the exact error, and it tries
-again. If the output is still known to be broken at the end, the project
-finishes as **review** instead of **done**, rather than handing you a build
-that doesn't run.
-
 Generated projects are typically a small single-page React + TypeScript app.
 
 ![A finished Llamaque project: stage tracker, generated files, task tree and pipeline log](docs/screenshot.png)
