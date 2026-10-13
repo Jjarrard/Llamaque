@@ -29,8 +29,10 @@ export const db = drizzle(globalForDb._sqlite, { schema });
 if (!globalForDb._migrated) {
   try {
     migrate(db, { migrationsFolder: path.join(process.cwd(), "drizzle") });
-  } catch {
-    // Tables may already exist on pre-migration installs - that's fine
+  } catch (err) {
+    // Tables may already exist on pre-migration installs - that's fine, but
+    // say so: a failed migration rolls back and leaves columns missing.
+    console.error("[db] migration failed:", err);
   }
   globalForDb._migrated = true;
 
