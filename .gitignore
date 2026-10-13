@@ -1,5 +1,3 @@
-# Root .gitignore — covers llamaque/
-
 # dependencies
 node_modules/
 

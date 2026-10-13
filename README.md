@@ -6,7 +6,7 @@ An AI pipeline that turns a one-line idea into working code. Describe a project,
 
 ## Prerequisites
 
-- [Node.js](https://nodejs.org) 18+
+- [Node.js](https://nodejs.org) 20.9+ (required by Next.js 16)
 - [Ollama](https://ollama.com) running locally
 
 Pull a model:
@@ -21,7 +21,8 @@ Any model works. Smaller ones (3B-8B) are faster, larger ones produce better cod
 ## Setup
 
 ```bash
-cd llamaque
+git clone https://github.com/Jjarrard/Llamaque.git
+cd Llamaque
 npm install
 npm run dev
 ```
