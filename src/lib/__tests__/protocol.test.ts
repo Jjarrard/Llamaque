@@ -4,7 +4,7 @@
  */
 
 import { describe, it, expect } from "vitest";
-import { parseTTM, PlanBlock, SummaryBlock } from "@/lib/protocol";
+import { parseTTM, cleanTaskTitle, PlanBlock, SummaryBlock } from "@/lib/protocol";
 
 // ─── PLAN block ───────────────────────────────────────────────────────────────
 
@@ -198,5 +198,48 @@ output: |
   it("does not return a fenced result for very short content", () => {
     const raw = "```\nx\n```";
     expect(parseTTM(raw)).toBeNull();
+  });
+});
+
+describe("parseTTM — BREAKDOWN cleanup", () => {
+  it("keeps one task per real task when the model splits it into labelled bullets", () => {
+    const raw = `>>BREAKDOWN
+- **Task 1:** Create a red ball that starts stationary at the top of the screen.
+- **Expected Output:** A red ball is visible at the top center of the screen, not moving.
+- **Done Criteria:** The ball is rendered in its initial position without any movement.
+>>END`;
+    const block = parseTTM(raw);
+    expect(block?.command).toBe("BREAKDOWN");
+    expect((block as { tasks: string[] }).tasks).toEqual([
+      "Create a red ball that starts stationary at the top of the screen.",
+    ]);
+  });
+
+  it("drops bare headings and strips markdown from epics", () => {
+    const raw = `>>BREAKDOWN
+- **User Flow Description**:
+- The user opens the application.
+- **The user clicks on the "Drop Ball" button.**
+>>END`;
+    expect((parseTTM(raw) as { tasks: string[] }).tasks).toEqual([
+      "The user opens the application.",
+      'The user clicks on the "Drop Ball" button.',
+    ]);
+  });
+
+  it("keeps the [File] prefix on Manager tasks", () => {
+    expect(cleanTaskTitle('[App.tsx] Task 2: "Add habit input and Add button"')).toBe(
+      "[App.tsx] Add habit input and Add button",
+    );
+    expect(cleanTaskTitle("[App.tsx] Expected output: a list")).toBeNull();
+  });
+
+  it("leaves ordinary titles alone", () => {
+    expect(cleanTaskTitle("[FormPanel.tsx] Add submit button with form validation handler")).toBe(
+      "[FormPanel.tsx] Add submit button with form validation handler",
+    );
+    expect(cleanTaskTitle("Output the running total below the list")).toBe(
+      "Output the running total below the list",
+    );
   });
 });

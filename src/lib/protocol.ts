@@ -213,6 +213,10 @@ function parseNeedsWiderWindow(body: string): NeedsWiderWindowBlock | null {
 
 function parseBreakdown(body: string): BreakdownBlock | null {
   const tasks: string[] = [];
+  const push = (raw: string) => {
+    const title = cleanTaskTitle(raw);
+    if (title) tasks.push(title);
+  };
   // Match lines like: - task: "description" or - "description" or - description
   const lines = body.split("\n");
   for (const line of lines) {
@@ -222,30 +226,58 @@ function parseBreakdown(body: string): BreakdownBlock | null {
     // Try: - task: "description"
     let match = trimmedLine.match(/^-\s*task:\s*"(.+?)"\s*$/);
     if (match) {
-      tasks.push(match[1]);
+      push(match[1]);
       continue;
     }
     // Try: - task: description (no quotes)
     match = trimmedLine.match(/^-\s*task:\s*(.+)$/);
     if (match) {
-      tasks.push(match[1].replace(/^["']|["']$/g, "").trim());
+      push(match[1]);
       continue;
     }
     // Try: - "description"
     match = trimmedLine.match(/^-\s*"(.+?)"\s*$/);
     if (match) {
-      tasks.push(match[1]);
+      push(match[1]);
       continue;
     }
     // Try: - description (bare)
     match = trimmedLine.match(/^-\s+(.+)$/);
     if (match) {
-      tasks.push(match[1].replace(/^["']|["']$/g, "").trim());
+      push(match[1]);
     }
   }
 
   if (tasks.length === 0) return null;
   return { command: "BREAKDOWN", tasks };
+}
+
+/** Labels small models put on lines that describe a task rather than being one. */
+const TASK_METADATA_LABEL =
+  /^(expected output|done criteria|acceptance criteria|success criteria|deliverables?|output|notes?|details|description|rationale|why)\s*:/i;
+
+/**
+ * Turn one BREAKDOWN list item into a task title, or null if it isn't one.
+ * Small models often write markdown ("**Task 1:** Do X") and split one task
+ * over several bullets ("**Expected Output:** ...", "**Done Criteria:** ..."),
+ * or emit a bare heading ("**User Flow Description**:").
+ */
+export function cleanTaskTitle(raw: string): string | null {
+  let s = raw
+    .replace(/\*\*|__/g, "") // bold
+    .replace(/^["']|["']$/g, "")
+    .trim();
+  // Keep a "[File.tsx]" target prefix (Manager tasks) and clean what follows
+  const prefixMatch = s.match(/^\[[^\]]+\]\s*/);
+  const prefix = prefixMatch ? prefixMatch[0] : "";
+  s = s.slice(prefix.length);
+  if (TASK_METADATA_LABEL.test(s)) return null;
+  // "Task 1: Do X" / "Epic 2 - Do X" → "Do X"
+  s = s.replace(/^(task|epic|feature|step)\s*\d*\s*[:.\-–]\s*/i, "");
+  s = s.replace(/^["']|["']$/g, "").trim();
+  // A heading with nothing after its colon is not a task
+  if (!s || /^[^:]{1,60}:$/.test(s)) return null;
+  return prefix + s;
 }
 
 function parseReady(body: string): ReadyBlock | null {

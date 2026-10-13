@@ -964,7 +964,11 @@ export default function ProjectPage() {
   for (const f of manifestFiles) {
     const fileTasks = taskList.filter((t) => t.filePath === f.path);
     if (fileTasks.length === 0) {
-      fileStatusMap[f.path] = "pending";
+      // Files no feature was assigned to are written from a default spec
+      // during Execute, without tasks of their own.
+      fileStatusMap[f.path] = completedStages.includes("execute")
+        ? "done"
+        : "pending";
     } else if (fileTasks.some((t) => t.status === "executing")) {
       fileStatusMap[f.path] = "writing";
     } else if (fileTasks.every((t) => t.status === "done")) {
@@ -988,6 +992,8 @@ export default function ProjectPage() {
       DEPTH_LABEL_CLASS[task.depth] || styles.depthLabelTask;
     const isWorkParent = task.depth === 2 && children.length > 0;
     const isOpen = openAccordions.has(task.id);
+    // Older projects stored model markdown in task titles
+    const title = task.description.replace(/\*\*|__/g, "");
 
     return (
       <li key={task.id} className={styles.taskItem}>
@@ -1028,7 +1034,7 @@ export default function ProjectPage() {
             />
             <span
               className={`${styles.taskDesc} ${task.status === "stuck" ? styles.taskStuck : ""}`}
-              title={task.description}
+              title={title}
             >
               {isWorkParent ? (
                 <button
@@ -1038,10 +1044,10 @@ export default function ProjectPage() {
                   <span className={styles.accordionIcon}>
                     {isOpen ? "▾" : "▸"}
                   </span>
-                  {task.description}
+                  {title}
                 </button>
               ) : (
-                task.description
+                title
               )}
             </span>
             <span className={styles.taskStatusLabel}>
