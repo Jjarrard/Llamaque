@@ -14,6 +14,7 @@ import path from "path";
 import type { Pipeline } from ".";
 import { MAX_TEST_REPAIR_ATTEMPTS, MAX_TEST_FIX_ROUNDS } from "./types";
 import { truncateForPrompt } from "./text-utils";
+import { generateScaffold } from "./planning";
 
 /**
  * TDD phase: generate test files BEFORE writing code.
@@ -138,14 +139,24 @@ export async function generateTests(
 
   await p.log("TDD", `Generating tests for ${file}...`);
 
-  // Read the already-written code file to extract the real export name.
-  // Tests are now generated after Execute, so the file exists.
+  // Read the code file to extract the real export name. In the normal
+  // TDD-first flow it is still the Architect's scaffold, which says nothing
+  // about the real props or buttons, so only treat it as source once real
+  // code is there (a standalone TDD re-run, or repairSingleTest regenerating).
   const outDir = p.outputDir();
   let exportName: string | undefined;
   const codePath = path.join(outDir, file);
   let fileContent: string | undefined;
-  if (fs.existsSync(codePath)) {
-    fileContent = fs.readFileSync(codePath, "utf-8");
+  const manifestFile = p.manifest.find((m) => m.path === file);
+  const onDisk = fs.existsSync(codePath)
+    ? fs.readFileSync(codePath, "utf-8")
+    : undefined;
+  const isScaffold =
+    onDisk !== undefined &&
+    manifestFile !== undefined &&
+    onDisk === generateScaffold(p, manifestFile);
+  if (onDisk !== undefined && !isScaffold) {
+    fileContent = onDisk;
     // Match: export default function FooBar or export default class FooBar
     const match = fileContent.match(
       /export\s+default\s+(?:function|class)\s+(\w+)/,
@@ -222,6 +233,7 @@ export async function generateTests(
     fileContent && fileContent.trim().length > 100 ? fileContent : undefined,
     manifestDescription,
     componentAnalysis,
+    p.contractSnippet || undefined,
   );
 
   if (!result.tests) {
@@ -245,6 +257,7 @@ export async function generateTests(
         : undefined,
       manifestDescription,
       componentAnalysis,
+      p.contractSnippet || undefined,
     );
   }
 

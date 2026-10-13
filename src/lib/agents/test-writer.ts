@@ -160,6 +160,7 @@ export async function runTestWriter(
   fileContent?: string,
   manifestDescription?: string,
   componentAnalysis?: ComponentAnalysis,
+  sharedTypes?: string,
 ): Promise<TestWriterResult> {
   const ext = targetFile?.split(".").pop()?.toLowerCase() || "tsx";
   const isReact = ext === "tsx" || ext === "jsx";
@@ -221,6 +222,12 @@ export async function runTestWriter(
     userMessage += `\n\nWrite EXACTLY 3 tests for \`./${baseName}\`. Import using: import * as mod from "./${baseName}"\n`;
     userMessage += `Do NOT import from any other path. Do NOT write implementation code.\n`;
     userMessage += `Focus on: does the module load, do main functions return expected types, edge cases.\n`;
+  }
+
+  // The Developer is given these same definitions, so tests that use their
+  // field and prop names will match the code written to pass them.
+  if (sharedTypes) {
+    userMessage += `\n\nSHARED TYPES (the implementation will use these exact definitions — use the same field and prop names in your render() calls):\n${sharedTypes}`;
   }
 
   // Inject source code snippet as additional context (supports both leaf and container)

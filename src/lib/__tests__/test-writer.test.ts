@@ -103,4 +103,39 @@ describe("runTestWriter", () => {
     expect(systemPrompt).toContain('import App from "./App"');
     expect(systemPrompt).not.toContain('import Component from "./Component"');
   });
+
+  it("includes shared contract types so tests use the Developer's prop names", async () => {
+    const { callOllama } = await import("@/lib/ollama");
+    const mockCallOllama = vi.mocked(callOllama);
+    mockCallOllama.mockClear();
+
+    const types = "interface Habit { id: number; name: string }\ntype OnDelete = (id: number) => void;";
+    await runTestWriter(
+      "test-model",
+      "MyProject",
+      "A habit tracker",
+      ["Render a habit row"],
+      "HabitItem.tsx",
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      types,
+    );
+
+    const [, , , userMessage] = mockCallOllama.mock.calls[0];
+    expect(userMessage).toContain("SHARED TYPES");
+    expect(userMessage).toContain(types);
+  });
+
+  it("omits the shared types section when there are none", async () => {
+    const { callOllama } = await import("@/lib/ollama");
+    const mockCallOllama = vi.mocked(callOllama);
+    mockCallOllama.mockClear();
+
+    await runTestWriter("test-model", "MyProject", "A tracker", ["Manage state"], "App.tsx");
+
+    const [, , , userMessage] = mockCallOllama.mock.calls[0];
+    expect(userMessage).not.toContain("SHARED TYPES");
+  });
 });

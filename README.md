@@ -44,8 +44,9 @@ Open http://localhost:3000.
    - **Architect**: decides which files to create, scaffolds them, and writes shared types
    - **Decompose**: breaks the idea into epics
    - **Breakdown**: breaks epics into features
-   - **Execute**: writes the code, file by file in dependency order
-   - **TDD**: writes tests against the code that now exists
+   - **TDD**: writes tests from the requirements and the shared types; they fail
+     until the code exists
+   - **Execute**: writes the code to make them pass, file by file in dependency order
    - **QA**: runs the tests and repairs failures, fixes problems one at a time,
      and renders the app in a headless browser to catch runtime errors
    - **Feedback**: describe changes and re-run

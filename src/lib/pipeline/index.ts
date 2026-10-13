@@ -333,8 +333,8 @@ export class Pipeline {
       "architect",
       "decompose",
       "breakdown",
-      "execute",
       "tdd",
+      "execute",
       "qa",
       "feedback",
     ];
@@ -566,37 +566,15 @@ export class Pipeline {
       return;
     }
 
-    // ── Execute + TDD ──
-    // Execute runs first (write code from requirements), then TDD generates tests
-    // that use the real prop shapes from the written code. This eliminates prop-name
-    // mismatches that require costly test-repair rounds in QA.
+    // ── TDD + Execute ──
+    // TDD runs first: tests are written from the requirements and the shared
+    // contract types, and fail against the scaffold. Execute then writes code
+    // to make them pass; the Developer is shown the tests so it uses the same
+    // prop names.
     if (stage === "all" || stage === "tdd" || stage === "execute") {
       const fileSpecs = await prepareFileSpecs(this);
 
-      // ── Execute: write code ──
-      if (stage === "all" || stage === "execute") {
-        await this.emitStageStart("execute");
-        await this.log("SYS", "Executing — writing code for each file...");
-        await runExecutePhase(this, fileSpecs);
-        await this.markStageComplete("execute");
-        await runJudgePhase(this);
-
-        if (stage === "execute") {
-          await this.log(
-            "SYS",
-            "Execute complete. Review code, then run TDD/QA.",
-          );
-          await this.pauseAndDone();
-          return;
-        }
-      }
-
-      if (this.aborted) {
-        await this.pauseAndDone();
-        return;
-      }
-
-      // ── TDD: generate test files (after code exists so test writer sees real props) ──
+      // ── TDD: generate test files ──
       if (stage === "all" || stage === "tdd") {
         await this.emitStageStart("tdd");
         await this.log("TDD", "Generating test files...");
@@ -615,8 +593,28 @@ export class Pipeline {
         if (stage === "tdd") {
           await this.log(
             "SYS",
-            "TDD complete. Tests generated. Run QA to validate.",
+            "TDD complete. Tests generated. Run Execute to write the implementation.",
           );
+          await this.pauseAndDone();
+          return;
+        }
+      }
+
+      if (this.aborted) {
+        await this.pauseAndDone();
+        return;
+      }
+
+      // ── Execute: write code to pass the tests ──
+      if (stage === "all" || stage === "execute") {
+        await this.emitStageStart("execute");
+        await this.log("SYS", "Executing — writing code for each file...");
+        await runExecutePhase(this, fileSpecs);
+        await this.markStageComplete("execute");
+        await runJudgePhase(this);
+
+        if (stage === "execute") {
+          await this.log("SYS", "Execute complete. Review code, then run QA.");
           await this.pauseAndDone();
           return;
         }
