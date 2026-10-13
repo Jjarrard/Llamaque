@@ -1,9 +1,21 @@
 "use client";
 
-import { useEffect, useState, useRef, useCallback, useMemo } from "react";
+import { useEffect, useState, useRef, useCallback } from "react";
 import { useParams, useRouter } from "next/navigation";
 import Link from "next/link";
 import styles from "./project.module.css";
+import type { LogEntry, ManifestEntry, Project, Task } from "./types";
+import TaskTree from "./TaskTree";
+import LogPanel, { agentClass } from "./LogPanel";
+import StageTracker from "./StageTracker";
+import FileStatusPanel, { type FileStatus } from "./FileStatusPanel";
+import FeedbackLedgerPanel from "./FeedbackLedgerPanel";
+import OutputFilesPanel from "./OutputFilesPanel";
+import ConfirmDialog from "./ConfirmDialog";
+import {
+  formatElapsed,
+  getPrimaryFile,
+} from "./helpers";
 import {
   deriveCurrentStatus,
   deriveStageStates,
@@ -11,206 +23,16 @@ import {
   deriveIsRunning,
 } from "@/lib/status";
 
-type Task = {
-  id: number;
-  projectId: number;
-  parentId: number | null;
-  description: string;
-  status: string;
-  depth: number;
-  sortOrder: number;
-  filePath: string | null;
-  output: string | null;
-  qAReason: string | null;
-  stuckReason: string | null;
-  retryCount: number;
-  editRetryCount: number;
-  parseRetryCount: number;
-};
 
-type Project = {
-  id: number;
-  name: string;
-  description: string;
-  status: string;
-  primaryModel: string;
-  threadProfile: "low" | "med" | "high";
-  completedStages: string;
-  fileManifest: string | null;
-  currentStage: string | null;
-  currentActivity: string | null;
-  activityCounter: number;
-  stageStartedAt: number | null;
-  feedbackLedger: string | null;
-};
 
-function getPrimaryFile(manifestJson: string | null | undefined): string {
-  if (!manifestJson) return "output.txt";
-  try {
-    const files = JSON.parse(manifestJson) as { path: string }[];
-    if (!files.length) return "output.txt";
-    // Prefer a previewable file: HTML > TSX/JSX > first file
-    const html = files.find((f) => /\.(html?|htm)$/i.test(f.path));
-    if (html) return html.path;
-    const react = files.find((f) => /\.[jt]sx$/i.test(f.path));
-    if (react) return react.path;
-    return files[0].path;
-  } catch {
-    return "output.txt";
-  }
-}
 
-type ManifestEntry = {
-  path: string;
-  type?: string;
-  language?: string;
-  description?: string;
-};
 
-/** Generate human-readable run instructions based on the file manifest */
-function generateRunInstructions(
-  manifest: ManifestEntry[],
-  projectName: string,
-): string {
-  if (!manifest || manifest.length === 0) return "No output files yet.";
 
-  const extensions = manifest.map(
-    (f) => f.path.split(".").pop()?.toLowerCase() || "",
-  );
-  const hasReact = extensions.some((e) => ["tsx", "jsx"].includes(e));
-  const hasHTML = extensions.some((e) => ["html", "htm"].includes(e));
-  const hasPython = extensions.some((e) => e === "py");
-  const hasNode = extensions.some((e) => ["js", "ts"].includes(e)) && !hasReact;
-  const hasMarkdown = extensions.some((e) => ["md", "markdown"].includes(e));
 
-  const lines: string[] = [`# How to run: ${projectName}\n`];
-  lines.push(`Download the project files using the ⬇ Download button above.\n`);
 
-  if (hasReact) {
-    lines.push(`## React (TSX/JSX)\n`);
-    lines.push(
-      `You can preview TSX files directly in the browser using the **Preview** button.\n`,
-    );
-    lines.push(`To run locally:\n`);
-    lines.push(`\`\`\`bash`);
-    lines.push(`# Create a new React project`);
-    lines.push(`npx create-react-app my-app --template typescript`);
-    lines.push(`cd my-app`);
-    lines.push(`# Copy the generated .tsx files into src/`);
-    lines.push(`# Then run:`);
-    lines.push(`npm start`);
-    lines.push(`\`\`\`\n`);
-    lines.push(`Or use Vite:\n`);
-    lines.push(`\`\`\`bash`);
-    lines.push(`npm create vite@latest my-app -- --template react-ts`);
-    lines.push(`cd my-app`);
-    lines.push(`# Copy .tsx files into src/`);
-    lines.push(`npm install && npm run dev`);
-    lines.push(`\`\`\``);
-  }
 
-  if (hasHTML) {
-    lines.push(`## HTML\n`);
-    lines.push(
-      `Open the .html file directly in a browser, or use a local server:\n`,
-    );
-    lines.push(`\`\`\`bash`);
-    lines.push(`npx serve .`);
-    lines.push(`# or`);
-    lines.push(`python3 -m http.server 8000`);
-    lines.push(`\`\`\``);
-  }
 
-  if (hasPython) {
-    lines.push(`## Python\n`);
-    lines.push(`\`\`\`bash`);
-    lines.push(
-      `python3 ${manifest.find((f) => f.path.endsWith(".py"))?.path || "main.py"}`,
-    );
-    lines.push(`\`\`\``);
-    lines.push(
-      `\nInstall dependencies if needed: \`pip install -r requirements.txt\``,
-    );
-  }
 
-  if (hasNode) {
-    lines.push(`## Node.js\n`);
-    lines.push(`\`\`\`bash`);
-    lines.push(
-      `node ${manifest.find((f) => f.path.endsWith(".js") || f.path.endsWith(".ts"))?.path || "index.js"}`,
-    );
-    lines.push(`\`\`\``);
-    lines.push(
-      `\nFor TypeScript: \`npx tsx ${manifest.find((f) => f.path.endsWith(".ts"))?.path || "index.ts"}\``,
-    );
-  }
-
-  if (hasMarkdown && !hasReact && !hasHTML && !hasPython && !hasNode) {
-    lines.push(`## Markdown\n`);
-    lines.push(`Open the .md files in any Markdown viewer or editor.`);
-  }
-
-  lines.push(`\n## Files included\n`);
-  for (const f of manifest) {
-    lines.push(`- **${f.path}** — ${f.description || f.type || "output file"}`);
-  }
-
-  return lines.join("\n");
-}
-
-type LogEntry = {
-  id: number;
-  agent: string;
-  message: string;
-  taskId: number | null;
-  createdAt: string;
-  hasRaw?: boolean;
-};
-
-type LogDetail = {
-  rawPrompt: string | null;
-  rawResponse: string | null;
-};
-
-const DEPTH_LABELS: Record<number, string> = {
-  1: "Epic",
-  2: "Feature",
-};
-
-const DEPTH_LABEL_CLASS: Record<number, string> = {
-  1: styles.depthLabelEpic,
-  2: styles.depthLabelFeature,
-};
-
-const statusDotClass: Record<string, string> = {
-  awaiting_approval: styles.statusAwaitingApproval,
-  pending: styles.statusPending,
-  decomposing: styles.statusDecomposing,
-  ready: styles.statusReady,
-  executing: styles.statusExecuting,
-  qa_check: styles.statusQaCheck,
-  editing: styles.statusEditing,
-  done: styles.statusDone,
-  stuck: styles.statusStuck,
-};
-
-const agentClass: Record<string, string> = {
-  PM: styles.logAgentPM,
-  MGR: styles.logAgentMGR,
-  DEV: styles.logAgentDEV,
-  QA: styles.logAgentQA,
-  EDT: styles.logAgentEDT,
-  SYS: styles.logAgentSYS,
-  RECOVER: styles.logAgentRECOVER,
-  ARCH: styles.logAgentARCH,
-  TDD: styles.logAgentTDD,
-  JUDGE: styles.logAgentJUDGE,
-  SUM: styles.logAgentSUM,
-  CHK: styles.logAgentCHK,
-  FBK: styles.logAgentFBK,
-  IMP: styles.logAgentIMP,
-  PLAN: styles.logAgentPLAN,
-};
 
 const badgeClass: Record<string, string> = {
   pending: styles.badgePending,
@@ -219,49 +41,8 @@ const badgeClass: Record<string, string> = {
   review: styles.badgeReview,
   done: styles.badgeDone,
 };
-/** Build a tree from flat task list */
-function buildTree(tasks: Task[]) {
-  const byParent = new Map<number | null, Task[]>();
-  for (const t of tasks) {
-    const list = byParent.get(t.parentId) || [];
-    list.push(t);
-    byParent.set(t.parentId, list);
-  }
-  return byParent;
-}
 
-type LedgerStatus = "pending" | "active" | "done" | "failed" | "skipped";
 
-type LedgerItem = {
-  id: string;
-  kind: "locate" | "edit" | "verify" | "rewrite" | "note";
-  status: LedgerStatus;
-  file?: string;
-  instruction?: string;
-  window?: { startLine: number; endLine: number };
-  attempts: number;
-  evidence?: string;
-  before?: string;
-  after?: string;
-  startedAt: number;
-  updatedAt: number;
-};
-
-type FeedbackLedger = {
-  goal: string;
-  startedAt: number;
-  finishedAt?: number;
-  items: LedgerItem[];
-};
-
-function parseLedger(raw: string | null | undefined): FeedbackLedger | null {
-  if (!raw) return null;
-  try {
-    return JSON.parse(raw) as FeedbackLedger;
-  } catch {
-    return null;
-  }
-}
 
 export default function ProjectPage() {
   const params = useParams();
@@ -279,15 +60,8 @@ export default function ProjectPage() {
   const optimisticStartRef = useRef(0);
   const effectiveRunning = running || optimisticRunning;
   const [availableModels, setAvailableModels] = useState<string[]>([]);
-  const [expandedLogs, setExpandedLogs] = useState<
-    Record<number, LogDetail | null>
-  >({});
-  const [openAccordions, setOpenAccordions] = useState<Set<number>>(new Set());
   const [showDeleteConfirm, setShowDeleteConfirm] = useState(false);
   const [resetStage, setResetStage] = useState<string | null>(null);
-  const [logFilter, setLogFilter] = useState<string | null>(null);
-  const [editingTask, setEditingTask] = useState<number | null>(null);
-  const [editingDescription, setEditingDescription] = useState("");
   const [showPreview, setShowPreview] = useState(false);
   const [previewKey, setPreviewKey] = useState(0);
   const [feedbackText, setFeedbackText] = useState("");
@@ -297,126 +71,21 @@ export default function ProjectPage() {
     { path: string; content: string }[]
   >([]);
   const [selectedFile, setSelectedFile] = useState<string | null>(null);
-  const [showRunInstructions, setShowRunInstructions] = useState(false);
   const [editingName, setEditingName] = useState(false);
   const [editingNameValue, setEditingNameValue] = useState("");
   const [editingDescValue, setEditingDescValue] = useState("");
   const [editingDesc, setEditingDesc] = useState(false);
-  const logEndRef = useRef<HTMLDivElement>(null);
   const eventSourceRef = useRef<EventSource | null>(null);
   const [runStartTime, setRunStartTime] = useState<Date | null>(null);
   // Wall-clock time, refreshed every second while running, so render can show
   // elapsed times without reading the clock itself.
   const [nowMs, setNowMs] = useState(0);
   const [streamOutput, setStreamOutput] = useState<string>("");
-  const [showTimeline, setShowTimeline] = useState(false);
   const streamOutputRef = useRef<HTMLPreElement>(null);
 
-  // ── Timeline / benchmark computation ─────────────────────────────────────
-  type TLEvent = LogEntry & { offsetMs: number };
-  type TLStage = {
-    stage: string;
-    startMs: number;
-    endMs: number;
-    durationMs: number;
-    events: TLEvent[];
-  };
-  type TimelineData = {
-    groups: TLStage[];
-    totalMs: number;
-    startMs: number;
-    retryCount: number;
-    recoveryCount: number;
-    recoverySuccessCount: number;
-    stuckCount: number;
-  };
 
-  const timelineData = useMemo((): TimelineData | null => {
-    if (!logEntries.length) return null;
-    const sorted = [...logEntries].sort(
-      (a, b) =>
-        new Date(a.createdAt).getTime() - new Date(b.createdAt).getTime(),
-    );
-    const startMs = new Date(sorted[0].createdAt).getTime();
-    const endMs = new Date(sorted[sorted.length - 1].createdAt).getTime();
-    const groups: TLStage[] = [];
-    let cur: { stage: string; startMs: number; events: TLEvent[] } | null =
-      null;
-    for (const entry of sorted) {
-      const ms = new Date(entry.createdAt).getTime();
-      if (entry.agent === "STAGE") {
-        if (cur)
-          groups.push({ ...cur, endMs: ms, durationMs: ms - cur.startMs });
-        cur = { stage: entry.message, startMs: ms, events: [] };
-      } else {
-        if (!cur) cur = { stage: "init", startMs, events: [] };
-        cur.events.push({ ...entry, offsetMs: ms - cur.startMs });
-      }
-    }
-    if (cur) {
-      groups.push({ ...cur, endMs: endMs, durationMs: endMs - cur.startMs });
-    }
-    let retryCount = 0,
-      recoveryCount = 0,
-      recoverySuccessCount = 0,
-      stuckCount = 0;
-    for (const e of sorted) {
-      if (e.agent === "QA" && /attempt \d+ FAIL/i.test(e.message)) retryCount++;
-      if (e.agent === "RECOVER" && /Layer 1:/i.test(e.message)) recoveryCount++;
-      if (e.agent === "RECOVER" && /SUCCESS/i.test(e.message))
-        recoverySuccessCount++;
-      if (e.agent === "QA" && /short-circuiting/i.test(e.message)) stuckCount++;
-    }
-    return {
-      groups,
-      totalMs: endMs - startMs,
-      startMs,
-      retryCount,
-      recoveryCount,
-      recoverySuccessCount,
-      stuckCount,
-    };
-  }, [logEntries]);
 
-  const fmtMs = (ms: number) => {
-    if (ms < 1000) return `${ms}ms`;
-    const s = Math.round(ms / 1000);
-    if (s < 60) return `${s}s`;
-    return `${Math.floor(s / 60)}m ${s % 60}s`;
-  };
 
-  const toggleAccordion = (taskId: number) => {
-    setOpenAccordions((prev) => {
-      const next = new Set(prev);
-      if (next.has(taskId)) next.delete(taskId);
-      else next.add(taskId);
-      return next;
-    });
-  };
-
-  const toggleLogDetail = async (logId: number) => {
-    if (expandedLogs[logId] !== undefined) {
-      setExpandedLogs((prev) => {
-        const next = { ...prev };
-        delete next[logId];
-        return next;
-      });
-      return;
-    }
-    setExpandedLogs((prev) => ({ ...prev, [logId]: null }));
-    try {
-      const res = await fetch(`/api/logs/${logId}`);
-      if (res.ok) {
-        const data = await res.json();
-        setExpandedLogs((prev) => ({
-          ...prev,
-          [logId]: { rawPrompt: data.rawPrompt, rawResponse: data.rawResponse },
-        }));
-      }
-    } catch {
-      // Ignore
-    }
-  };
 
   const fetchProject = useCallback(async () => {
     const res = await fetch(`/api/projects/${projectId}`);
@@ -575,28 +244,6 @@ export default function ProjectPage() {
     };
   }, [projectId, fetchProject]);
 
-  // NO auto-scroll — user controls their own scroll position
-
-  // Auto-scroll log panel when new entries arrive
-  const userScrolledUpRef = useRef(false);
-  const logListRef = useRef<HTMLDivElement>(null);
-
-  // Detect if user has scrolled up (so we don't fight them)
-  const handleLogScroll = useCallback(() => {
-    const el = logListRef.current;
-    if (!el) return;
-    // If user is within 80px of the bottom, consider them "following"
-    const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 80;
-    userScrolledUpRef.current = !atBottom;
-  }, []);
-
-  // Scroll to bottom when new log entries arrive (unless user scrolled up)
-  useEffect(() => {
-    const el = logListRef.current;
-    if (!userScrolledUpRef.current && el) {
-      el.scrollTop = el.scrollHeight;
-    }
-  }, [logEntries, logFilter]);
 
   // Poll task status while running — use a faster 2s interval
   // and do a final fetch when running transitions to false
@@ -762,25 +409,7 @@ export default function ProjectPage() {
     }
   };
 
-  const handleEditTask = async (taskId: number) => {
-    if (!editingDescription.trim()) return;
-    await fetch(`/api/tasks/${taskId}`, {
-      method: "PATCH",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        action: "edit_description",
-        description: editingDescription.trim(),
-      }),
-    });
-    setEditingTask(null);
-    setEditingDescription("");
-    fetchProject();
-  };
 
-  const startEditTask = (task: Task) => {
-    setEditingTask(task.id);
-    setEditingDescription(task.description);
-  };
 
   const handleRunQA = async () => {
     setError(null);
@@ -904,7 +533,6 @@ export default function ProjectPage() {
     danger: styles.statusBarDanger,
   };
 
-  const tree = buildTree(taskList);
 
   // Check if output exists (leaf tasks executed means output files have content)
   const hasOutputFiles = hasExecutedLeafTasks;
@@ -921,12 +549,7 @@ export default function ProjectPage() {
 
   // Filtered log entries (STAGE entries are internal - hide from log panel)
   const visibleLogs = logEntries.filter((e) => e.agent !== "STAGE");
-  const filteredLogs = logFilter
-    ? visibleLogs.filter((e) => e.agent === logFilter)
-    : visibleLogs;
 
-  // Unique agent names for filter (exclude STAGE)
-  const logAgents = Array.from(new Set(visibleLogs.map((e) => e.agent)));
 
   // Last activity for "Now Doing" banner — prefer DB-backed currentActivity
   // (set by pipeline in real-time) over log polling.
@@ -951,7 +574,7 @@ export default function ProjectPage() {
       return [];
     }
   })();
-  const fileStatusMap: Record<string, "pending" | "writing" | "done"> = {};
+  const fileStatusMap: Record<string, FileStatus> = {};
   for (const f of manifestFiles) {
     const fileTasks = taskList.filter((t) => t.filePath === f.path);
     if (fileTasks.length === 0) {
@@ -969,155 +592,7 @@ export default function ProjectPage() {
     }
   }
 
-  // Format elapsed run time as "1m 32s" or "45s"
-  const formatElapsed = (s: number) => {
-    if (s < 60) return `${s}s`;
-    return `${Math.floor(s / 60)}m ${s % 60}s`;
-  };
 
-  /** Render a task and its children recursively */
-  const renderTask = (task: Task) => {
-    const children = tree.get(task.id) || [];
-    const depthLabel = DEPTH_LABELS[task.depth] || "Task";
-    const depthLabelCls =
-      DEPTH_LABEL_CLASS[task.depth] || styles.depthLabelTask;
-    const isWorkParent = task.depth === 2 && children.length > 0;
-    const isOpen = openAccordions.has(task.id);
-    // Older projects stored model markdown in task titles
-    const title = task.description.replace(/\*\*|__/g, "");
-
-    return (
-      <li key={task.id} className={styles.taskItem}>
-        {editingTask === task.id ? (
-          <div className={styles.taskEditRow}>
-            <input
-              className={styles.taskEditInput}
-              value={editingDescription}
-              onChange={(e) => setEditingDescription(e.target.value)}
-              onKeyDown={(e) => {
-                if (e.key === "Enter") handleEditTask(task.id);
-                if (e.key === "Escape") setEditingTask(null);
-              }}
-              autoFocus
-            />
-            <button
-              className={styles.approveBtn}
-              onClick={() => handleEditTask(task.id)}
-            >
-              ✓
-            </button>
-            <button
-              className={styles.rejectBtn}
-              onClick={() => setEditingTask(null)}
-            >
-              ✕
-            </button>
-          </div>
-        ) : (
-          <div
-            className={`${styles.taskRow} ${task.status === "executing" ? styles.taskRowExecuting : ""}`}
-          >
-            <span className={`${styles.depthLabel} ${depthLabelCls}`}>
-              {depthLabel}
-            </span>
-            <span
-              className={`${styles.taskStatus} ${statusDotClass[task.status] || styles.statusPending}`}
-            />
-            <span
-              className={`${styles.taskDesc} ${task.status === "stuck" ? styles.taskStuck : ""}`}
-              title={title}
-            >
-              {isWorkParent ? (
-                <button
-                  className={styles.accordionToggle}
-                  onClick={() => toggleAccordion(task.id)}
-                >
-                  <span className={styles.accordionIcon}>
-                    {isOpen ? "▾" : "▸"}
-                  </span>
-                  {title}
-                </button>
-              ) : (
-                title
-              )}
-            </span>
-            <span className={styles.taskStatusLabel}>
-              {task.status === "awaiting_approval"
-                ? "awaiting"
-                : task.status.replace("_", " ")}
-            </span>
-            {!running &&
-              [
-                "awaiting_approval",
-                "pending",
-                "ready",
-                "stuck",
-                "done",
-              ].includes(task.status) && (
-                <button
-                  className={styles.taskEditBtn}
-                  onClick={() => startEditTask(task)}
-                  title="Edit description"
-                >
-                  ✎
-                </button>
-              )}
-            {task.status === "awaiting_approval" && (
-              <span className={styles.approvalActions}>
-                <button
-                  className={styles.approveBtn}
-                  onClick={() => handleApprove(task.id)}
-                >
-                  ✓
-                </button>
-                <button
-                  className={styles.rejectBtn}
-                  onClick={() => handleReject(task.id)}
-                >
-                  ✕
-                </button>
-              </span>
-            )}
-          </div>
-        )}
-        {task.status === "stuck" && task.stuckReason && (
-          <div className={styles.stuckInfo}>
-            <span className={styles.stuckReason}>{task.stuckReason}</span>
-            <div className={styles.stuckActions}>
-              <button
-                className={styles.stuckBtn}
-                onClick={() => handleStuckAction(task.id, "retry")}
-              >
-                Retry
-              </button>
-              <button
-                className={styles.stuckBtn}
-                onClick={() => handleStuckAction(task.id, "skip")}
-              >
-                Skip
-              </button>
-            </div>
-          </div>
-        )}
-        {/* Children: for work parent (depth 3), wrap in accordion */}
-        {children.length > 0 && (
-          <>
-            {isWorkParent ? (
-              isOpen && (
-                <ul className={styles.workList}>
-                  {children.map((c) => renderTask(c))}
-                </ul>
-              )
-            ) : (
-              <ul className={styles.childList}>
-                {children.map((c) => renderTask(c))}
-              </ul>
-            )}
-          </>
-        )}
-      </li>
-    );
-  };
 
   if (!project) {
     return (
@@ -1127,7 +602,6 @@ export default function ProjectPage() {
     );
   }
 
-  const rootTasks = tree.get(null) || [];
 
   return (
     <div className={styles.container}>
@@ -1356,103 +830,15 @@ export default function ProjectPage() {
       </div>
 
       {/* ── Stage Pipeline Tracker ── */}
-      <div className={styles.stageTracker}>
-        {PIPELINE_STAGES.map((stage, i) => {
-          const state = stageStates[stage.key];
-          const isFirst = i === 0;
-          // Can run this stage if upstream is done and not currently running
-          const upstreamDone =
-            isFirst || stageStates[PIPELINE_STAGES[i - 1].key] === "done";
-          const canRun =
-            !effectiveRunning && state === "pending" && upstreamDone;
-          const canRetry = !effectiveRunning && state === "done";
-          const isApproval = state === "approval";
-
-          return (
-            <div key={stage.key} className={styles.stageItem}>
-              {i > 0 && (
-                <div
-                  className={`${styles.stageConnector} ${
-                    state === "done" || state === "active"
-                      ? styles.stageConnectorActive
-                      : ""
-                  }`}
-                />
-              )}
-              <div
-                className={`${styles.stageChip} ${
-                  state === "done"
-                    ? styles.stageChipDone
-                    : state === "active"
-                      ? styles.stageChipActive
-                      : state === "approval"
-                        ? styles.stageChipApproval
-                        : styles.stageChipPending
-                }`}
-              >
-                <span className={styles.stageIcon}>
-                  {state === "done" && "✓"}
-                  {state === "active" && (
-                    <span className={styles.stageSpinner} />
-                  )}
-                  {state === "pending" && "○"}
-                  {state === "approval" && "⚠"}
-                </span>
-                <span className={styles.stageLabel}>{stage.label}</span>
-                {canRun && (
-                  <button
-                    className={styles.stageRunBtn}
-                    onClick={() => {
-                      if (stage.key === "feedback") {
-                        setShowFeedbackInput(true);
-                      } else if (stage.key === "qa") {
-                        handleRunQA();
-                      } else {
-                        handleRun(stage.runStage);
-                      }
-                    }}
-                    title={
-                      stage.key === "feedback"
-                        ? "Add Feedback"
-                        : `Run ${stage.label}`
-                    }
-                  >
-                    {stage.key === "feedback" ? "✎" : "▶"}
-                  </button>
-                )}
-                {canRetry && (
-                  <button
-                    className={styles.stageRetryBtn}
-                    onClick={() => {
-                      if (stage.key === "feedback") {
-                        setShowFeedbackInput(true);
-                      } else {
-                        setResetStage(stage.runStage);
-                      }
-                    }}
-                    title={
-                      stage.key === "feedback"
-                        ? "Add More Feedback"
-                        : `Re-run ${stage.label}`
-                    }
-                  >
-                    {stage.key === "feedback" ? "✎" : "↻"}
-                  </button>
-                )}
-                {isApproval && (
-                  <button
-                    className={styles.stageApproveBtn}
-                    onClick={handleApproveAll}
-                    title="Approve all epics"
-                  >
-                    ✓ Approve
-                  </button>
-                )}
-              </div>
-            </div>
-          );
-        })}
-      </div>
+      <StageTracker
+        stageStates={stageStates}
+        effectiveRunning={effectiveRunning}
+        handleRun={handleRun}
+        handleRunQA={handleRunQA}
+        handleApproveAll={handleApproveAll}
+        setResetStage={setResetStage}
+        setShowFeedbackInput={setShowFeedbackInput}
+      />
 
       {/* ── Activity Banner — live "what is happening right now" ── */}
       {effectiveRunning && (liveActivity || lastActivity) && (
@@ -1482,35 +868,10 @@ export default function ProjectPage() {
 
       {/* ── File Status Panel — live file manifest with status dots ── */}
       {manifestFiles.length > 0 && (
-        <div className={styles.fileStatusPanel}>
-          <div className={styles.fileStatusHeader}>
-            <span className={styles.fileStatusTitle}>Files</span>
-            <span className={styles.fileStatusCount}>
-              {Object.values(fileStatusMap).filter((s) => s === "done").length}/
-              {manifestFiles.length} done
-            </span>
-          </div>
-          <div className={styles.fileStatusGrid}>
-            {manifestFiles.map((f) => {
-              const st = fileStatusMap[f.path] ?? "pending";
-              return (
-                <div
-                  key={f.path}
-                  className={`${styles.fileStatusItem} ${styles[`fileStatus_${st}`]}`}
-                >
-                  <span className={styles.fileStatusDot} />
-                  <span className={styles.fileStatusPath}>{f.path}</span>
-                  {st === "writing" && (
-                    <span className={styles.fileStatusWriting}>writing…</span>
-                  )}
-                  {st === "done" && (
-                    <span className={styles.fileStatusDoneLabel}>✓</span>
-                  )}
-                </div>
-              );
-            })}
-          </div>
-        </div>
+        <FileStatusPanel
+          manifestFiles={manifestFiles}
+          fileStatusMap={fileStatusMap}
+        />
       )}
 
       {/* ── Live Model Output — streaming token view ── */}
@@ -1547,124 +908,7 @@ export default function ProjectPage() {
       )}
 
       {/* ── Feedback Progress Ledger (Done / Now / Next) ── */}
-      {(() => {
-        const ledger = parseLedger(project?.feedbackLedger);
-        if (!ledger || ledger.items.length === 0) return null;
-        const done = ledger.items.filter((i) => i.status === "done");
-        const now = ledger.items.filter((i) => i.status === "active");
-        const next = ledger.items.filter((i) => i.status === "pending");
-        const failed = ledger.items.filter((i) => i.status === "failed");
-        return (
-          <div className={styles.feedbackPanel}>
-            <div className={styles.feedbackHeader}>
-              <span className={styles.feedbackTitle}>✎ Feedback progress</span>
-            </div>
-            <div style={{ fontSize: "0.85rem", padding: "0.5rem 0.75rem" }}>
-              <div style={{ opacity: 0.75, marginBottom: "0.5rem" }}>
-                Goal: {ledger.goal}
-              </div>
-              {now.length > 0 && (
-                <div style={{ marginBottom: "0.5rem" }}>
-                  <strong>Now:</strong>
-                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
-                    {now.map((i) => (
-                      <li key={i.id}>
-                        {i.file ?? "—"}: {i.instruction ?? i.kind}
-                        {i.window
-                          ? ` (L${i.window.startLine}-${i.window.endLine})`
-                          : ""}
-                        {i.attempts > 0 ? ` · attempt ${i.attempts}` : ""}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {next.length > 0 && (
-                <div style={{ marginBottom: "0.5rem" }}>
-                  <strong>Next:</strong>
-                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
-                    {next.map((i) => (
-                      <li key={i.id}>
-                        {i.file ?? "—"}: {i.instruction ?? i.kind}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {done.length > 0 && (
-                <div style={{ marginBottom: "0.5rem" }}>
-                  <strong>Done ({done.length}):</strong>
-                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
-                    {done.map((i) => (
-                      <li key={i.id}>
-                        <div>
-                          ✓ {i.file ?? "—"}: {i.instruction ?? i.kind}
-                          {i.window
-                            ? ` (L${i.window.startLine}-${i.window.endLine})`
-                            : ""}
-                        </div>
-                        {(i.before || i.after) && (
-                          <details style={{ marginTop: "0.15rem" }}>
-                            <summary
-                              style={{ cursor: "pointer", opacity: 0.7 }}
-                            >
-                              diff
-                            </summary>
-                            {i.before && (
-                              <pre
-                                style={{
-                                  margin: "0.25rem 0",
-                                  padding: "0.25rem 0.5rem",
-                                  background: "rgba(255,0,0,0.08)",
-                                  fontSize: "0.75rem",
-                                  whiteSpace: "pre-wrap",
-                                  borderLeft: "2px solid #c33",
-                                }}
-                              >
-                                {i.before}
-                              </pre>
-                            )}
-                            {i.after && (
-                              <pre
-                                style={{
-                                  margin: "0.25rem 0",
-                                  padding: "0.25rem 0.5rem",
-                                  background: "rgba(0,180,0,0.08)",
-                                  fontSize: "0.75rem",
-                                  whiteSpace: "pre-wrap",
-                                  borderLeft: "2px solid #2a7",
-                                }}
-                              >
-                                {i.after}
-                              </pre>
-                            )}
-                          </details>
-                        )}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-              {failed.length > 0 && (
-                <div>
-                  <strong>Failed ({failed.length}):</strong>
-                  <ul style={{ margin: "0.25rem 0", paddingLeft: "1.25rem" }}>
-                    {failed.map((i) => (
-                      <li
-                        key={i.id}
-                        style={{ color: "var(--color-error, #c33)" }}
-                      >
-                        ✗ {i.file ?? "—"}: {i.instruction ?? i.kind}
-                        {i.evidence ? ` — ${i.evidence}` : ""}
-                      </li>
-                    ))}
-                  </ul>
-                </div>
-              )}
-            </div>
-          </div>
-        );
-      })()}
+      <FeedbackLedgerPanel ledgerJson={project.feedbackLedger} />
 
       {/* ── Feedback Input Panel ── */}
       {showFeedbackInput && (
@@ -1753,431 +997,53 @@ export default function ProjectPage() {
 
       {/* ── Files & Output Panel ── */}
       {showOutput && (
-        <div className={styles.outputPanel}>
-          <div className={styles.outputHeader}>
-            <div className={styles.outputTabs}>
-              <button
-                className={`${styles.outputTab} ${!showRunInstructions ? styles.outputTabActive : ""}`}
-                onClick={() => setShowRunInstructions(false)}
-              >
-                📄 Files
-              </button>
-              <button
-                className={`${styles.outputTab} ${showRunInstructions ? styles.outputTabActive : ""}`}
-                onClick={() => setShowRunInstructions(true)}
-              >
-                🚀 How to Run
-              </button>
-            </div>
-            <button
-              className={styles.outputCloseBtn}
-              onClick={() => setShowOutput(false)}
-              title="Close"
-            >
-              ✕
-            </button>
-          </div>
-
-          {showRunInstructions ? (
-            <div className={styles.outputRunInstructions}>
-              <pre className={styles.outputRunPre}>
-                {project?.fileManifest
-                  ? generateRunInstructions(
-                      JSON.parse(project.fileManifest),
-                      project.name,
-                    )
-                  : "No output files yet."}
-              </pre>
-            </div>
-          ) : (
-            <div className={styles.outputBody}>
-              {/* File sidebar */}
-              <div className={styles.outputFileList}>
-                {outputFiles.map((f) => (
-                  <button
-                    key={f.path}
-                    className={`${styles.outputFileItem} ${selectedFile === f.path ? styles.outputFileActive : ""}`}
-                    onClick={() => setSelectedFile(f.path)}
-                    title={f.path}
-                  >
-                    {f.path}
-                  </button>
-                ))}
-                {outputFiles.length === 0 && (
-                  <p className={styles.outputEmpty}>No files generated yet.</p>
-                )}
-              </div>
-
-              {/* Code viewer */}
-              <div className={styles.outputCodeViewer}>
-                {selectedFile ? (
-                  <pre className={styles.outputCode}>
-                    <code>
-                      {outputFiles.find((f) => f.path === selectedFile)
-                        ?.content || ""}
-                    </code>
-                  </pre>
-                ) : (
-                  <p className={styles.outputEmpty}>
-                    Select a file to view its contents.
-                  </p>
-                )}
-              </div>
-            </div>
-          )}
-        </div>
+        <OutputFilesPanel
+          project={project}
+          outputFiles={outputFiles}
+          selectedFile={selectedFile}
+          setSelectedFile={setSelectedFile}
+          onClose={() => setShowOutput(false)}
+        />
       )}
 
       {/* Confirm reset dialog */}
       {resetStage && (
-        <div className={styles.confirmOverlay}>
-          <div className={styles.confirmDialog}>
-            <p className={styles.confirmText}>
-              Re-run <strong>{resetStage}</strong> stage? This will delete
-              generated data from this stage onward and re-run it.
-            </p>
-            <div className={styles.confirmActions}>
-              <button
-                className={styles.confirmYes}
-                onClick={() => handleResetStage(resetStage)}
-              >
-                Yes, re-run
-              </button>
-              <button
-                className={styles.confirmNo}
-                onClick={() => setResetStage(null)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          confirmLabel="Yes, re-run"
+          onConfirm={() => handleResetStage(resetStage)}
+          onCancel={() => setResetStage(null)}
+        >
+          Re-run <strong>{resetStage}</strong> stage? This will delete
+          generated data from this stage onward and re-run it.
+        </ConfirmDialog>
       )}
 
       {/* Confirm delete dialog */}
       {showDeleteConfirm && (
-        <div className={styles.confirmOverlay}>
-          <div className={styles.confirmDialog}>
-            <p className={styles.confirmText}>
-              Delete <strong>{project.name}</strong>? This will permanently
-              remove the project, all tasks, logs, and output files.
-            </p>
-            <div className={styles.confirmActions}>
-              <button
-                className={styles.confirmDanger}
-                onClick={handleDeleteProject}
-              >
-                Delete permanently
-              </button>
-              <button
-                className={styles.confirmNo}
-                onClick={() => setShowDeleteConfirm(false)}
-              >
-                Cancel
-              </button>
-            </div>
-          </div>
-        </div>
+        <ConfirmDialog
+          confirmLabel="Delete permanently"
+          danger
+          onConfirm={handleDeleteProject}
+          onCancel={() => setShowDeleteConfirm(false)}
+        >
+          Delete <strong>{project.name}</strong>? This will permanently
+          remove the project, all tasks, logs, and output files.
+        </ConfirmDialog>
       )}
 
       {error && <div className={styles.error}>{error}</div>}
 
       <div className={styles.layout}>
-        {/* Task Tree */}
-        <div className={styles.taskPanel}>
-          <h2 className={styles.taskPanelTitle}>
-            Tasks
-            <span className={styles.taskPanelStats}>
-              <span className={styles.taskStatDone}>
-                {taskList.filter((t) => t.status === "done").length} done
-              </span>
-              {taskList.filter((t) => t.status === "executing").length > 0 && (
-                <span className={styles.taskStatExecuting}>
-                  {taskList.filter((t) => t.status === "executing").length}{" "}
-                  running
-                </span>
-              )}
-              {taskList.filter((t) => t.status === "stuck").length > 0 && (
-                <span className={styles.taskStatStuck}>
-                  {taskList.filter((t) => t.status === "stuck").length} stuck
-                </span>
-              )}
-              <span className={styles.taskStatTotal}>/ {taskList.length}</span>
-            </span>
-          </h2>
-          {taskList.length === 0 ? (
-            <p className={styles.emptyTasks}>
-              No tasks yet. Hit Decompose to start.
-            </p>
-          ) : (
-            <ul className={styles.taskList}>
-              {rootTasks.map((task) => renderTask(task))}
-            </ul>
-          )}
-        </div>
+        <TaskTree
+          taskList={taskList}
+          running={running}
+          handleApprove={handleApprove}
+          handleReject={handleReject}
+          handleStuckAction={handleStuckAction}
+          onTaskEdited={fetchProject}
+        />
 
-        {/* Log Panel */}
-        <div className={styles.logPanel}>
-          <div className={styles.logPanelHeader}>
-            <div className={styles.logPanelTitleRow}>
-              <div className={styles.logPanelTabs}>
-                <button
-                  className={`${styles.logTab} ${!showTimeline ? styles.logTabActive : ""}`}
-                  onClick={() => setShowTimeline(false)}
-                >
-                  Log
-                </button>
-                <button
-                  className={`${styles.logTab} ${showTimeline ? styles.logTabActive : ""}`}
-                  onClick={() => setShowTimeline(true)}
-                  title="Timing benchmark &amp; event timeline"
-                >
-                  Timeline
-                </button>
-              </div>
-              <span className={styles.logCount}>
-                {!showTimeline && filteredLogs.length > 0
-                  ? `${filteredLogs.length} entries`
-                  : ""}
-                {effectiveRunning && (
-                  <span className={styles.logLiveIndicator}>● LIVE</span>
-                )}
-              </span>
-            </div>
-            {!showTimeline && logAgents.length > 1 && (
-              <div className={styles.logFilters}>
-                <button
-                  className={`${styles.logFilterBtn} ${!logFilter ? styles.logFilterActive : ""}`}
-                  onClick={() => setLogFilter(null)}
-                >
-                  All
-                </button>
-                {logAgents.map((agent) => (
-                  <button
-                    key={agent}
-                    className={`${styles.logFilterBtn} ${logFilter === agent ? styles.logFilterActive : ""} ${agentClass[agent] || ""}`}
-                    onClick={() =>
-                      setLogFilter(logFilter === agent ? null : agent)
-                    }
-                  >
-                    {agent}
-                  </button>
-                ))}
-              </div>
-            )}
-          </div>
-
-          {showTimeline ? (
-            <div className={styles.tlContainer}>
-              {!timelineData ? (
-                <p className={styles.tlEmpty}>No log data yet.</p>
-              ) : (
-                <>
-                  {/* ── Stats bar ── */}
-                  <div className={styles.tlStats}>
-                    <div className={styles.tlStat}>
-                      <span className={styles.tlStatVal}>
-                        {fmtMs(timelineData.totalMs)}
-                      </span>
-                      <span className={styles.tlStatLabel}>total</span>
-                    </div>
-                    <div className={styles.tlStat}>
-                      <span
-                        className={`${styles.tlStatVal} ${timelineData.retryCount > 0 ? styles.tlStatWarn : ""}`}
-                      >
-                        {timelineData.retryCount}
-                      </span>
-                      <span className={styles.tlStatLabel}>QA retries</span>
-                    </div>
-                    <div className={styles.tlStat}>
-                      <span
-                        className={`${styles.tlStatVal} ${timelineData.recoveryCount > 0 ? styles.tlStatDanger : ""}`}
-                      >
-                        {timelineData.recoveryCount}
-                      </span>
-                      <span className={styles.tlStatLabel}>recoveries</span>
-                    </div>
-                    <div className={styles.tlStat}>
-                      <span
-                        className={`${styles.tlStatVal} ${timelineData.recoverySuccessCount > 0 ? styles.tlStatSuccess : ""}`}
-                      >
-                        {timelineData.recoverySuccessCount}
-                      </span>
-                      <span className={styles.tlStatLabel}>rescued</span>
-                    </div>
-                    <div className={styles.tlStat}>
-                      <span
-                        className={`${styles.tlStatVal} ${timelineData.stuckCount > 0 ? styles.tlStatDanger : ""}`}
-                      >
-                        {timelineData.stuckCount}
-                      </span>
-                      <span className={styles.tlStatLabel}>short-circuits</span>
-                    </div>
-                  </div>
-
-                  {/* ── Stage timing bars ── */}
-                  {timelineData.totalMs > 0 && (
-                    <div className={styles.tlBars}>
-                      {timelineData.groups
-                        .filter((g) => g.stage !== "init" && g.durationMs > 500)
-                        .sort((a, b) => b.durationMs - a.durationMs)
-                        .map((g) => {
-                          const pct = Math.max(
-                            2,
-                            Math.round(
-                              (g.durationMs / timelineData.totalMs) * 100,
-                            ),
-                          );
-                          const isRecovery =
-                            g.stage === "recover" || g.stage === "RECOVER";
-                          return (
-                            <div
-                              key={`${g.stage}-${g.startMs}`}
-                              className={styles.tlBar}
-                            >
-                              <span className={styles.tlBarLabel}>
-                                {g.stage.toUpperCase()}
-                              </span>
-                              <div className={styles.tlBarTrack}>
-                                <div
-                                  className={`${styles.tlBarFill} ${isRecovery ? styles.tlBarFillRecovery : ""}`}
-                                  style={{ width: `${pct}%` }}
-                                />
-                              </div>
-                              <span className={styles.tlBarTime}>
-                                {fmtMs(g.durationMs)}
-                              </span>
-                            </div>
-                          );
-                        })}
-                    </div>
-                  )}
-
-                  {/* ── Event groups ── */}
-                  <div className={styles.tlGroups}>
-                    {timelineData.groups.map((g) => (
-                      <details
-                        key={`${g.stage}-${g.startMs}`}
-                        className={styles.tlGroup}
-                        open={g.events.some(
-                          (e) =>
-                            e.agent === "RECOVER" ||
-                            /FAIL|stuck|short-circuit/i.test(e.message),
-                        )}
-                      >
-                        <summary className={styles.tlGroupHeader}>
-                          <span
-                            className={`${styles.tlGroupStage} ${agentClass[g.stage.toUpperCase()] || ""}`}
-                          >
-                            {g.stage.toUpperCase()}
-                          </span>
-                          <span className={styles.tlGroupDuration}>
-                            {fmtMs(g.durationMs)}
-                          </span>
-                          <span className={styles.tlGroupCount}>
-                            {g.events.length} events
-                          </span>
-                        </summary>
-                        <div className={styles.tlEvents}>
-                          {g.events.map((e) => {
-                            const isFail =
-                              /FAIL|failed|stuck|short-circuit/i.test(
-                                e.message,
-                              );
-                            const isSuccess =
-                              /SUCCESS|success|approved|passed|clean/i.test(
-                                e.message,
-                              );
-                            const isRecover = e.agent === "RECOVER";
-                            return (
-                              <div
-                                key={e.id}
-                                className={`${styles.tlEvent} ${isFail ? styles.tlEventFail : ""} ${isSuccess ? styles.tlEventSuccess : ""} ${isRecover ? styles.tlEventRecover : ""}`}
-                              >
-                                <span className={styles.tlEventDelta}>
-                                  +{fmtMs(e.offsetMs)}
-                                </span>
-                                <span
-                                  className={`${styles.tlEventAgent} ${agentClass[e.agent] || ""}`}
-                                >
-                                  [{e.agent}]
-                                </span>
-                                <span className={styles.tlEventMsg}>
-                                  {e.message}
-                                </span>
-                              </div>
-                            );
-                          })}
-                        </div>
-                      </details>
-                    ))}
-                  </div>
-                </>
-              )}
-            </div>
-          ) : (
-            <div
-              className={styles.logList}
-              ref={logListRef}
-              onScroll={handleLogScroll}
-            >
-              {filteredLogs.map((entry) => (
-                <div key={entry.id} className={styles.logEntry}>
-                  <div
-                    className={`${styles.logRow} ${entry.hasRaw ? styles.logClickable : ""}`}
-                    onClick={() => entry.hasRaw && toggleLogDetail(entry.id)}
-                  >
-                    <span className={styles.logTimestamp}>
-                      {new Date(entry.createdAt).toLocaleTimeString([], {
-                        hour: "2-digit",
-                        minute: "2-digit",
-                        second: "2-digit",
-                      })}
-                    </span>
-                    <span
-                      className={`${styles.logAgent} ${agentClass[entry.agent] || ""}`}
-                    >
-                      [{entry.agent}]
-                    </span>
-                    <span className={styles.logMessage}>{entry.message}</span>
-                    {entry.hasRaw && (
-                      <span className={styles.logExpandIcon}>
-                        {expandedLogs[entry.id] !== undefined ? "▾" : "▸"}
-                      </span>
-                    )}
-                  </div>
-                  {expandedLogs[entry.id] !== undefined && (
-                    <div className={styles.logDetailBox}>
-                      {expandedLogs[entry.id] === null ? (
-                        <p className={styles.logDetailLoading}>Loading…</p>
-                      ) : (
-                        <>
-                          <div className={styles.logDetailSection}>
-                            <span className={styles.logDetailLabel}>
-                              Prompt
-                            </span>
-                            <pre className={styles.logDetailPre}>
-                              {expandedLogs[entry.id]!.rawPrompt || "(none)"}
-                            </pre>
-                          </div>
-                          <div className={styles.logDetailSection}>
-                            <span className={styles.logDetailLabel}>
-                              Response
-                            </span>
-                            <pre className={styles.logDetailPre}>
-                              {expandedLogs[entry.id]!.rawResponse || "(none)"}
-                            </pre>
-                          </div>
-                        </>
-                      )}
-                    </div>
-                  )}
-                </div>
-              ))}
-              <div ref={logEndRef} />
-            </div>
-          )}
-        </div>
+        <LogPanel logEntries={logEntries} effectiveRunning={effectiveRunning} />
       </div>
     </div>
   );
